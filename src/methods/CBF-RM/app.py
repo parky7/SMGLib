@@ -455,106 +455,41 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
     print(f"Trajectory CSVs saved to {cbf_rm_dir}")
 
 
-def main():
-    env_type = None
-    verbose_mode = True
-
-    if len(sys.argv) > 1:
-        env_type = sys.argv[1]
-    if len(sys.argv) > 2:
-        verbose_mode = (sys.argv[2] == '--verbose')
-
-    # Get obstacles from standardized environment
+def run_cbf_rm_simulation(
+    scenario,
+    N,
+    X0,
+    G,
+    dt,
+    K,
+    d_safe,
+    obs_sense_range,
+    gamma_gain,
+    alpha_gain,
+    beta_gain,
+    p_weight,
+    q_weight,
+    phi_risk,
+    c_risk,
+    t_risk,
+    eps_D,
+    k_psi,
+    omega_c,
+    clip_u,
+    clip_omega,
+    goal_threshold=0.3,
+    verbose_mode=True,
+):
+    """Run one CBF-RM rollout and return histories plus time-to-goal metrics."""
     obstacles = []
-    if env_type == 'doorway':
+    if scenario == 'doorway':
         obstacles = StandardizedEnvironment.get_doorway_obstacles()
-    elif env_type == 'hallway':
+    elif scenario == 'hallway':
         obstacles = StandardizedEnvironment.get_hallway_obstacles()
-    elif env_type == 'intersection':
+    elif scenario == 'intersection':
         obstacles = StandardizedEnvironment.get_intersection_obstacles()
-
-    # --- User input for moving agents (matching IMPC-DR / ORCA format) ---
-    num_moving = get_input("Enter number of moving agents", 2, int)
-
-    print("\nConfigure moving agents:")
-
-    if env_type == 'doorway':
-        print("\nDoorway Configuration:")
-        print("- The doorway has a vertical wall at x=0 with a gap between y=-2 and y=2")
-        print("- X coordinates should be between -5 and 5")
-        print("- Y coordinates should be between -7 and 7")
-    elif env_type == 'hallway':
-        print("\nHallway Configuration:")
-        print("- The hallway has walls at y=-2 and y=2")
-        print("- Robots should stay between y=-1.5 and y=1.5 (middle of hallway)")
-        print("- X coordinates should be between -5 and 5")
-    elif env_type == 'intersection':
-        print("\nIntersection Configuration:")
-        print("- The intersection has corridors with center at (0, 0)")
-        print("- Corridor width extends from -2 to 2 in both directions")
-        print("- X and Y coordinates should be between -5 and 5")
-
-    standard_positions = StandardizedEnvironment.get_standard_agent_positions(env_type, num_moving)
-
-    default_positions = []
-    for pos in standard_positions:
-        default_positions.append({
-            'start_x': pos['start'][0],
-            'start_y': pos['start'][1],
-            'goal_x': pos['goal'][0],
-            'goal_y': pos['goal'][1]
-        })
-
-    X0_list = []
-    G_list = []
-    for i in range(num_moving):
-        print(f"\n--- Agent {i+1} Parameters ---")
-        default_idx = i % len(default_positions)
-        defaults = default_positions[default_idx]
-
-        start_x = get_input(f"Start X position", defaults['start_x'], float)
-        start_y = get_input(f"Start Y position", defaults['start_y'], float)
-        goal_x = get_input(f"Goal X position", defaults['goal_x'], float)
-        goal_y = get_input(f"Goal Y position", defaults['goal_y'], float)
-
-        X0_list.append([start_x, start_y])
-        G_list.append([goal_x, goal_y])
-        print(f"Agent {i+1} configured: Start=({start_x}, {start_y}), Goal=({goal_x}, {goal_y})")
-
-    N = num_moving
-    X0 = np.array(X0_list)
-    G = np.array(G_list)
-
-    # ========================================================
-    # Simulation parameters
-    # ========================================================
-    dt = 0.1  # match step_size used by evaluate_impc_trajectories
-    T = 30.0
-    K = int(round(T / dt))
-
-    agent_radius = StandardizedEnvironment.DEFAULT_AGENT_RADIUS
-    d_safe = 2.0 * agent_radius + 0.08
-
-    # Obstacle sensing range (only add CBF constraints for nearby obstacles)
-    obs_sense_range = 3.0
-
-    # QP gains
-    gamma_gain = 1.2
-    alpha_gain = 5.7
-    beta_gain = 1.5
-    p_weight = 12.0
-    q_weight = 0.24
-
-    phi_risk = 1
-    c_risk = 0.3
-    t_risk = 0.8
-
-    eps_D = 0.01
-    k_psi = 2.5
-    omega_c = 0.4
-
-    clip_u = 1.0  # increased for standardized grid scale
-    clip_omega = 2.0
+    else:
+        print(f"Warning: unknown scenario '{scenario}', using no static obstacles.")
 
     # ========================================================
     # Histories
@@ -696,7 +631,7 @@ def main():
         # Early termination: check if all agents reached goals
         all_done = True
         for i in range(N):
-            if np.linalg.norm(X[i, :, k + 1] - G[i]) > 0.3:
+            if np.linalg.norm(X[i, :, k + 1] - G[i]) > goal_threshold:
                 all_done = False
                 break
         if all_done:
@@ -715,6 +650,166 @@ def main():
     if verbose_mode:
         print(f"Infeasible fallback counts per agent: {infeasible_count.tolist()}")
 
+    # Time-to-goal per agent in steps and seconds.
+    ttg_steps = np.full(N, K, dtype=int)
+    reached_goal = np.zeros(N, dtype=bool)
+    for i in range(N):
+        for step in range(K + 1):
+            if np.linalg.norm(X[i, :, step] - G[i]) <= goal_threshold:
+                ttg_steps[i] = step
+                reached_goal[i] = True
+                break
+    ttg_seconds = ttg_steps.astype(float) * dt
+
+    return (
+        X,
+        Theta,
+        Uhist,
+        Ohist,
+        Rhist,
+        Zhist,
+        Dmin_hist,
+        infeasible_count,
+        K,
+        ttg_steps,
+        ttg_seconds,
+        reached_goal,
+        obstacles,
+    )
+
+
+def main():
+    env_type = None
+    verbose_mode = True
+
+    if len(sys.argv) > 1:
+        env_type = sys.argv[1]
+    if len(sys.argv) > 2:
+        verbose_mode = (sys.argv[2] == '--verbose')
+
+    # --- User input for moving agents (matching IMPC-DR / ORCA format) ---
+    num_moving = get_input("Enter number of moving agents", 2, int)
+
+    print("\nConfigure moving agents:")
+
+    if env_type == 'doorway':
+        print("\nDoorway Configuration:")
+        print("- The doorway has a vertical wall at x=0 with a gap between y=-2 and y=2")
+        print("- X coordinates should be between -5 and 5")
+        print("- Y coordinates should be between -7 and 7")
+    elif env_type == 'hallway':
+        print("\nHallway Configuration:")
+        print("- The hallway has walls at y=-2 and y=2")
+        print("- Robots should stay between y=-1.5 and y=1.5 (middle of hallway)")
+        print("- X coordinates should be between -5 and 5")
+    elif env_type == 'intersection':
+        print("\nIntersection Configuration:")
+        print("- The intersection has corridors with center at (0, 0)")
+        print("- Corridor width extends from -2 to 2 in both directions")
+        print("- X and Y coordinates should be between -5 and 5")
+
+    standard_positions = StandardizedEnvironment.get_standard_agent_positions(env_type, num_moving)
+
+    default_positions = []
+    for pos in standard_positions:
+        default_positions.append({
+            'start_x': pos['start'][0],
+            'start_y': pos['start'][1],
+            'goal_x': pos['goal'][0],
+            'goal_y': pos['goal'][1]
+        })
+
+    X0_list = []
+    G_list = []
+    for i in range(num_moving):
+        print(f"\n--- Agent {i+1} Parameters ---")
+        default_idx = i % len(default_positions)
+        defaults = default_positions[default_idx]
+
+        start_x = get_input(f"Start X position", defaults['start_x'], float)
+        start_y = get_input(f"Start Y position", defaults['start_y'], float)
+        goal_x = get_input(f"Goal X position", defaults['goal_x'], float)
+        goal_y = get_input(f"Goal Y position", defaults['goal_y'], float)
+
+        X0_list.append([start_x, start_y])
+        G_list.append([goal_x, goal_y])
+        print(f"Agent {i+1} configured: Start=({start_x}, {start_y}), Goal=({goal_x}, {goal_y})")
+
+    N = num_moving
+    X0 = np.array(X0_list)
+    G = np.array(G_list)
+
+    # ========================================================
+    # Simulation parameters
+    # ========================================================
+    dt = 0.1  # match step_size used by evaluate_impc_trajectories
+    T = 30.0
+    K = int(round(T / dt))
+
+    agent_radius = StandardizedEnvironment.DEFAULT_AGENT_RADIUS
+    d_safe = 2.0 * agent_radius + 0.08
+
+    # Obstacle sensing range (only add CBF constraints for nearby obstacles)
+    obs_sense_range = 3.0
+
+    # QP gains
+    gamma_gain = 1.2
+    alpha_gain = 5.7
+    beta_gain = 1.5
+    p_weight = 12.0
+    q_weight = 0.24
+
+    phi_risk = 1
+    c_risk = 0.3
+    t_risk = 0.8
+
+    eps_D = 0.01
+    k_psi = 2.5
+    omega_c = 0.4
+
+    clip_u = 1.0  # increased for standardized grid scale
+    clip_omega = 2.0
+
+    (
+        X,
+        Theta,
+        Uhist,
+        Ohist,
+        Rhist,
+        Zhist,
+        Dmin_hist,
+        infeasible_count,
+        K,
+        ttg_steps,
+        ttg_seconds,
+        reached_goal,
+        obstacles,
+    ) = run_cbf_rm_simulation(
+        scenario=env_type,
+        N=N,
+        X0=X0,
+        G=G,
+        dt=dt,
+        K=K,
+        d_safe=d_safe,
+        obs_sense_range=obs_sense_range,
+        gamma_gain=gamma_gain,
+        alpha_gain=alpha_gain,
+        beta_gain=beta_gain,
+        p_weight=p_weight,
+        q_weight=q_weight,
+        phi_risk=phi_risk,
+        c_risk=c_risk,
+        t_risk=t_risk,
+        eps_D=eps_D,
+        k_psi=k_psi,
+        omega_c=omega_c,
+        clip_u=clip_u,
+        clip_omega=clip_omega,
+        goal_threshold=0.3,
+        verbose_mode=verbose_mode,
+    )
+
     # Save results
     print("\nSaving results...")
     save_csvs(X, G, Uhist, N, K)
@@ -723,6 +818,13 @@ def main():
     # Print final positions
     print("\nSimulation Results:")
     print(f"Number of steps taken: {K}")
+    print("Time to goal (TTG):")
+    for i in range(N):
+        if reached_goal[i]:
+            print(f"  Agent {i+1}: {ttg_steps[i]} steps ({ttg_seconds[i]:.2f}s)")
+        else:
+            print(f"  Agent {i+1}: not reached within {K} steps ({ttg_seconds[i]:.2f}s)")
+
     print("Final positions:")
     for i in range(N):
         dist = np.linalg.norm(X[i, :, -1] - G[i])
