@@ -22,13 +22,13 @@ from utils import StandardizedEnvironment
 SCENARIOS = ("doorway", "hallway", "intersection")
 DEFAULT_NUM_ROBOTS = 2
 
-# Full search: 3^5 = 243 combinations.
+# Full search: 5^5 = 3125 combinations.
 DEFAULT_QP_GAIN_RANGES = {
-	"gamma_gain": [0.8, 1.2, 1.6],
-	"alpha_gain": [4.5, 5.7, 7.0],
-	"beta_gain": [1.0, 1.5, 2.0],
-	"p_weight": [8.0, 12.0, 16.0],
-	"q_weight": [0.12, 0.24, 0.40],
+	"gamma_gain": [0.8, 1.0, 1.2, 1.4, 1.6],
+	"alpha_gain": [4.5, 5.1, 5.7, 6.3, 7.0],
+	"beta_gain": [1.0, 1.25, 1.5, 1.75, 2.0],
+	"p_weight": [8.0, 10.0, 12.0, 14.0, 16.0],
+	"q_weight": [0.12, 0.18, 0.24, 0.32, 0.40],
 }
 
 # Quick search: 2^5 = 32 combinations.
