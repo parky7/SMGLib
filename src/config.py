@@ -30,9 +30,13 @@ class SimulationConfig:
             "orca": "Social-ORCA",
             "cadrl": "Social-CADRL", 
             "impc": "Social-IMPC-DR",
+            "cbf_rm": "CBF-RM",
+            "mpepc": "MPEPC",
             "Social-ORCA": "Social-ORCA",
             "Social-CADRL": "Social-CADRL",
-            "Social-IMPC-DR": "Social-IMPC-DR"
+            "Social-IMPC-DR": "Social-IMPC-DR",
+            "CBF-RM": "CBF-RM",
+            "MPEPC": "MPEPC"
         }
         
         method_dir_name = method_map.get(method_name, method_name)
