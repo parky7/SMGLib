@@ -1390,15 +1390,16 @@ def run_mpepc(env_type='doorway', verbose=False):
                         print("✓ MPEPC simulation completed successfully!")
                         
                         # Look for generated trajectory files
-                        path_deviation_files = list(mpepc_dir.glob("path_deviation_robot_*.csv"))
+                        mpepc_logs_dir = Path(__file__).resolve().parent / 'logs' / 'MPEPC' / 'trajectories'
+                        path_deviation_files = list(mpepc_logs_dir.glob("path_deviation_robot_*.csv"))
                         if path_deviation_files:
                             print(f"✓ Found {len(path_deviation_files)} trajectory files")
                             
                             # Evaluate trajectories and velocities
                             # Use the user-selected verbose mode
                             
-                            trajectory_results = evaluate_impc_trajectories(mpepc_dir, env_type, path_deviation_files, verbose=verbose)
-                            velocity_metrics = evaluate_impc_velocities(mpepc_dir, verbose=verbose)
+                            trajectory_results = evaluate_impc_trajectories(mpepc_logs_dir, env_type, path_deviation_files, verbose=verbose)
+                            velocity_metrics = evaluate_impc_velocities(mpepc_logs_dir, verbose=verbose)
                             
                             # Display clean metrics if not in verbose mode
                             if not verbose and trajectory_results:
@@ -1436,13 +1437,13 @@ def run_mpepc(env_type='doorway', verbose=False):
                     print(result.stdout)
                     
                     # Look for generated trajectory files
-                    path_deviation_files = list(mpepc_dir.glob("path_deviation_robot_*.csv"))
+                    path_deviation_files = list(mpepc_logs_dir.glob("path_deviation_robot_*.csv"))
                     if path_deviation_files:
                         print(f"✓ Found {len(path_deviation_files)} trajectory files")
                         
                         # Evaluate trajectories and velocities
-                        trajectory_results = evaluate_impc_trajectories(mpepc_dir, env_type, path_deviation_files, verbose=verbose)
-                        velocity_metrics = evaluate_impc_velocities(mpepc_dir, verbose=verbose)
+                        trajectory_results = evaluate_impc_trajectories(mpepc_logs_dir, env_type, path_deviation_files, verbose=verbose)
+                        velocity_metrics = evaluate_impc_velocities(mpepc_logs_dir, verbose=verbose)
                         
                         # Display clean metrics if not in verbose mode
                         if not verbose and trajectory_results:
@@ -1772,7 +1773,7 @@ def evaluate_impc_trajectories(impc_dir, env_type, path_deviation_files, verbose
 
 def display_clean_impc_metrics(trajectory_metrics, velocity_metrics, ttg_metrics, flow_rate, makespan, success_rate, environment, num_agents):
     """Display IMPC DR metrics in clean minimal format."""
-    print("\nSOCIAL-IMPC-DR RESULTS")
+    print("\nRESULTS")
     
     # Calculate successful agents count
     successful_count = sum(1 for robot_id in ttg_metrics if ttg_metrics[robot_id].get('reached_goal', False))

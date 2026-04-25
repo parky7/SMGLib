@@ -6,6 +6,7 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.lines as mlines
 import matplotlib.patches as patches
 from pathlib import Path
+from scipy.optimize import minimize
 
 # Import standardized environment configuration
 sys.path.append(str(Path(__file__).resolve().parents[3] / 'src'))
@@ -16,9 +17,9 @@ K1 = 1.5
 K2 = 3.0
 BETA = 0.4
 LAMBDA = 2.0
-R_THRESH = 1.2      # user config w/ default
+R_THRESH = 1.2      # user config w/ 1.2 as default
 
-VMAX = 1.0          # user config
+VMAX = 1.0          # user config w/ 1.0 as default
 
 # Uncertainity parameters
 SIGMA_D_STATIC = 0.1         
@@ -35,10 +36,6 @@ T_HORIZON = 5.0
 DT_PLAN = 0.2
 N_HORIZON = int(round(T_HORIZON / DT_PLAN))   # 25
 DT_SIM = 0.1
-
-# Sampling
-N_RANDOM_SAMPLES = 180
-
 
 
 
@@ -185,10 +182,8 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius, static_obs_pos, dyn_obs_
 
 
 # -------------------- Planner --------------------
-def plan_one_step(robot_pose, goal_xy, agent_radius, static_obs_pos, dyn_obs_pred, prev_z=None, rng=None):
+def plan_one_step(robot_pose, goal_xy, agent_radius, static_obs_pos, dyn_obs_pred, prev_z=None):
     """Choose z* = (r, theta, delta, vmax) minimizing J, Eq.(28)."""
-    if rng is None:
-        rng = np.random.default_rng()
 
     goal_vec = goal_xy - robot_pose[:2]
     d_goal = float(np.linalg.norm(goal_vec))
@@ -211,14 +206,6 @@ def plan_one_step(robot_pose, goal_xy, agent_radius, static_obs_pos, dyn_obs_pre
     if prev_z is not None:
         candidates.append(tuple(prev_z))
 
-    # random coverage
-    for _ in range(N_RANDOM_SAMPLES):
-        r = rng.uniform(0.4, 6.0)
-        theta = rng.uniform(-1.2, 1.2)
-        delta = rng.uniform(-1.6, 1.6)
-        vm = rng.uniform(0.1, VMAX)
-        candidates.append((r, theta, delta, vm))
-
     best = None
     best_cost = np.inf
     best_poses = None
@@ -237,6 +224,23 @@ def plan_one_step(robot_pose, goal_xy, agent_radius, static_obs_pos, dyn_obs_pre
             best = z
             best_poses = poses
             best_vels = vels
+
+    # gradient-based refinement from best candidate
+    def cost_fn(z):
+        r, theta, delta, vmax = z
+        target = ego_to_target(robot_pose, r, theta, delta)
+        poses, vels = simulate_trajectory(robot_pose, target, vmax)
+        return trajectory_cost(poses, vels, goal_xy, agent_radius,
+                               static_obs_pos, dyn_obs_pred)
+
+    bounds = [(0.05, 8.0), (-1.2, 1.2), (-1.8, 1.8), (0.0, VMAX)]
+    result = minimize(cost_fn, list(best), method='L-BFGS-B', bounds=bounds,
+                      options={'maxiter': 50, 'ftol': 1e-4})
+    if result.fun < best_cost:
+        best       = result.x
+        best_cost  = result.fun
+        target     = ego_to_target(robot_pose, *best[:3])
+        best_poses, best_vels = simulate_trajectory(robot_pose, target, best[3])
 
     return best, best_cost, best_poses, best_vels
 
@@ -470,6 +474,11 @@ def main():
         G_list.append([goal_x, goal_y])
         print(f"Agent {i+1} configured: Start=({start_x}, {start_y}), Goal=({goal_x}, {goal_y})")
 
+    print("\n--- MPEPC Parameters ---")
+    global VMAX, R_THRESH
+    VMAX = get_input("Maximum velocity (vmax)", VMAX, float)
+    R_THRESH = get_input("Slowdown threshold (r_thresh)", R_THRESH, float)
+
     N = num_moving
     X0 = np.array(X0_list)
     G = np.array(G_list)
@@ -480,7 +489,6 @@ def main():
     K = int(round(T / dt))
     agent_radius = StandardizedEnvironment.DEFAULT_AGENT_RADIUS
     plan_every = max(1, int(round(DT_PLAN / DT_SIM)))
-    rng = np.random.default_rng(0)
 
     # format obstacles as 2D points for distance calculations
     static_obs_pos = [np.array(o[:2], float) for o in obstacles]
@@ -506,7 +514,6 @@ def main():
         if k == 0:
             vels_xy = np.zeros((N, 2))
         else:
-            #v_last = Uhist[:, 0, k - 1]
             v_last = np.sqrt(Uhist[:, 0, k-1]**2 + Uhist[:, 1, k-1]**2)
             psi    = Theta[:, k]
             vels_xy = np.column_stack([v_last * np.cos(psi), v_last * np.sin(psi)])
@@ -527,7 +534,7 @@ def main():
                 z_opt, _, _, _ = plan_one_step(
                     poses[i], G[i], agent_radius,
                     static_obs_pos, dyn_pred,
-                    prev_z=prev_z[i], rng=rng)
+                    prev_z=prev_z[i])
 
                 prev_z[i]         = z_opt
                 r_z, theta_z, delta_z, vm_z = z_opt
