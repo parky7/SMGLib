@@ -1199,15 +1199,16 @@ def run_cbf_rm(env_type='doorway', verbose=False):
                         print("✓ CBF-RM simulation completed successfully!")
                         
                         # Look for generated trajectory files
-                        path_deviation_files = list(cbf_rm_dir.glob("path_deviation_robot_*.csv"))
+                        cbf_rm_logs_dir = Path(__file__).resolve().parent / 'logs' / 'CBF-RM' / 'trajectories'
+                        path_deviation_files = list(cbf_rm_logs_dir.glob("path_deviation_robot_*.csv"))
                         if path_deviation_files:
                             print(f"✓ Found {len(path_deviation_files)} trajectory files")
                             
                             # Evaluate trajectories and velocities
                             # Use the user-selected verbose mode
                             
-                            trajectory_results = evaluate_impc_trajectories(cbf_rm_dir, env_type, path_deviation_files, verbose=verbose)
-                            velocity_metrics = evaluate_impc_velocities(cbf_rm_dir, verbose=verbose)
+                            trajectory_results = evaluate_impc_trajectories(cbf_rm_logs_dir, env_type, path_deviation_files, verbose=verbose)
+                            velocity_metrics = evaluate_impc_velocities(cbf_rm_logs_dir, verbose=verbose)
                             
                             # Display clean metrics if not in verbose mode
                             if not verbose and trajectory_results:
@@ -1245,13 +1246,13 @@ def run_cbf_rm(env_type='doorway', verbose=False):
                     print(result.stdout)
                     
                     # Look for generated trajectory files
-                    path_deviation_files = list(cbf_rm_dir.glob("path_deviation_robot_*.csv"))
+                    path_deviation_files = list(cbf_rm_logs_dir.glob("path_deviation_robot_*.csv"))
                     if path_deviation_files:
                         print(f"✓ Found {len(path_deviation_files)} trajectory files")
                         
                         # Evaluate trajectories and velocities
-                        trajectory_results = evaluate_impc_trajectories(cbf_rm_dir, env_type, path_deviation_files, verbose=verbose)
-                        velocity_metrics = evaluate_impc_velocities(cbf_rm_dir, verbose=verbose)
+                        trajectory_results = evaluate_impc_trajectories(cbf_rm_logs_dir, env_type, path_deviation_files, verbose=verbose)
+                        velocity_metrics = evaluate_impc_velocities(cbf_rm_logs_dir, verbose=verbose)
                         
                         # Display clean metrics if not in verbose mode
                         if not verbose and trajectory_results:
