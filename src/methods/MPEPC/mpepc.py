@@ -31,13 +31,19 @@ W_ACTION_V = 0.15
 W_ACTION_W = 0.05
 W_COLLISION = 0.4
 
+# MPEPC paper cost weigths -->leads to deadlock
+# W_PROGRESS = 0.2
+# W_ACTION_V = 1
+# W_ACTION_W = 0.2
+# W_COLLISION = 0.1
+
 # Planning / simulation
 T_HORIZON = 5.0
 DT_PLAN = 0.2
 N_HORIZON = int(round(T_HORIZON / DT_PLAN))   # 25
 DT_SIM = 0.1
 
-
+N_RANDOM_SAMPLES = 180
 
 
 
@@ -182,8 +188,10 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius, static_obs_pos, dyn_obs_
 
 
 # -------------------- Planner --------------------
-def plan_one_step(robot_pose, goal_xy, agent_radius, static_obs_pos, dyn_obs_pred, prev_z=None):
+def plan_one_step(robot_pose, goal_xy, agent_radius, static_obs_pos, dyn_obs_pred, prev_z=None, rng=None):
     """Choose z* = (r, theta, delta, vmax) minimizing J, Eq.(28)."""
+    if rng is None:
+        rng = np.random.default_rng()
 
     goal_vec = goal_xy - robot_pose[:2]
     d_goal = float(np.linalg.norm(goal_vec))
@@ -205,6 +213,13 @@ def plan_one_step(robot_pose, goal_xy, agent_radius, static_obs_pos, dyn_obs_pre
     # seed with previous optimum
     if prev_z is not None:
         candidates.append(tuple(prev_z))
+
+    for _ in range(N_RANDOM_SAMPLES):
+        r = rng.uniform(0.2, 6.0)
+        theta = rng.uniform(-np.pi, np.pi)
+        delta = rng.uniform(-np.pi, np.pi)
+        vm = rng.uniform(0.0, VMAX)
+        candidates.append((r, theta, delta, vm))
 
     best = None
     best_cost = np.inf
@@ -294,6 +309,11 @@ def save_gif(X, G, N, obstacles, env_type):
         ax.scatter(G[i, 0], G[i, 1], marker='*', s=300, color='green', edgecolor='black', zorder=4)
 
     dyn_scatter = ax.scatter([], [], c=[], s=200, edgecolors='black', linewidths=1, label='Agent')
+
+    # Full path traces (faint)
+    for i in range(N):
+        color = colors[i % len(colors)]
+        ax.plot(X[i, 0, :], X[i, 1, :], color=color, alpha=0.25, linewidth=1.2)
 
     # Legend
     legend_handles = []
