@@ -14,6 +14,7 @@ import matplotlib.patches as patches
 import json
 import venv
 import shutil
+import traceback
 
 # Import standardized environment configuration
 sys.path.append(str(Path(__file__).parent / 'src'))
@@ -1015,7 +1016,7 @@ def run_social_impc_dr(env_type='doorway', verbose=False):
                         # Execute the script content
                         with open(script_path, 'r') as f:
                             script_content = f.read()
-                        exec(script_content, {'__name__': '__main__'})
+                        exec(script_content, {'__name__': '__main__', '__file__': str(script_path)})
                         result = 0
                     
                     if result == 0 or result is None:  # Some scripts may not return a value
@@ -1114,50 +1115,36 @@ def run_social_impc_dr(env_type='doorway', verbose=False):
 
 
 def run_cbf_rm(env_type='doorway', verbose=False):
-    """Run cbf-rm by switching to its directory and calling app.py"""
+    """Run cbf-rm by switching to its directory and calling app.py via subprocess."""
     print("\nRunning cbf-rm simulation with standardized environment...")
     
-    # Create IMPC-DR-specific working directory
-    cbf_rm_dir = Path("src/methods/CBF-RM").resolve()  # Get absolute path
+    # 1. Path Setup
+    cbf_rm_dir = Path("src/methods/CBF-RM").resolve()
+    script_path = cbf_rm_dir / "app.py"
     original_dir = os.getcwd()
     
     print(f"CBF-RM directory: {cbf_rm_dir}")
     print(f"Original directory: {original_dir}")
     
+    if not script_path.exists():
+        print(f"✗ CBF-RM script not found at: {script_path}")
+        return
+
     try:
-        # Check if IMPC-DR environment is set up, create if not
-        cbf_rm_venv = cbf_rm_dir / "venv"
-        setup_marker = cbf_rm_venv / "cbf_rm_setup_complete"
+        # 2. Environment Setup
+        setup_marker = cbf_rm_dir / "venv" / "cbf_rm_setup_complete"
         
         if not setup_marker.exists():
             print("\n" + "="*50)
             print("CBF-RM ENVIRONMENT SETUP")
             print("="*50)
-            print("First-time setup: Preparing CBF-RM environment...")
-            
             if not setup_cbf_rm_environment(cbf_rm_dir):
                 print("✗ Failed to set up CBF-RM environment!")
                 return
+            print("✓ CBF-RM environment setup complete!\n" + "="*50)
             
-            print("✓ CBF-RM environment setup complete!")
-            print("="*50)
-        
-        # Use the original script (will be modified to use standardized environment)
-        script_path = cbf_rm_dir / "app.py"
-        
-        # Verify the script exists
-        if not script_path.exists():
-            print(f"✗ CBF-RM script not found at: {script_path}")
-            # Try to list what's actually in the directory
-            if cbf_rm_dir.exists():
-                print(f"Directory contents: {list(cbf_rm_dir.iterdir())}")
-            else:
-                print(f"Directory doesn't exist: {cbf_rm_dir}")
-            return
-        else:
-            print(f"✓ Found CBF-RM script at: {script_path}")
-            
-        # Change to the CBF-RM directory
+        # 3. Execution (Subprocess Only)
+        print(f"Executing script directly: {script_path}")
         os.chdir(cbf_rm_dir)
         print(f"Changed to directory: {cbf_rm_dir}")
         
@@ -1286,11 +1273,9 @@ def run_cbf_rm(env_type='doorway', verbose=False):
                 del sys.modules['app']
         
     except Exception as e:
-        print(f"✗ Error running CBF-RM: {e}")
-    finally:
-        os.chdir(original_dir)
-
-
+        print(f"Error setting up DSMPEPC environment: {e}")
+        return False
+    
 def setup_cbf_rm_environment(cbf_rm_dir):
     """Set up CBF-RM environment. CBF-RM uses only numpy/matplotlib/scipy
     which are available in the main environment, so just create the marker."""
@@ -1499,15 +1484,15 @@ def setup_mpepc_environment(mpepc_dir):
 
 def setup_impc_environment(impc_dir):
     """Set up IMPC-DR-specific virtual environment with compatible dependencies."""
-    
+
     venv_dir = impc_dir / "venv"
-    
+
     try:
         # Remove existing environment if it exists
         if venv_dir.exists():
             print("Removing existing environment...")
             shutil.rmtree(venv_dir)
-        
+
         # Create new virtual environment
         print("Creating virtual environment...")
         venv.create(venv_dir, with_pip=True)
@@ -1590,7 +1575,8 @@ def evaluate_impc_velocities(impc_dir, verbose=True):
     
     return velocity_metrics
 
-def evaluate_impc_trajectories(impc_dir, env_type, path_deviation_files, verbose=True):
+def evaluate_impc_trajectories(impc_dir, env_type, path_deviation_files, verbose=True,
+                               ttg_filename="ttg_impc_dr.csv"):
     """Evaluate IMPC-DR trajectories and calculate metrics."""
     if verbose:
         print("\nEvaluating Social-IMPC-DR trajectories:")
@@ -1698,7 +1684,7 @@ def evaluate_impc_trajectories(impc_dir, env_type, path_deviation_files, verbose
     success_rate = 0.0
     
     # Makespan Ratio calculation
-    ttg_file = os.path.join(impc_dir, "ttg_impc_dr.csv")
+    ttg_file = os.path.join(impc_dir, ttg_filename)
     if os.path.exists(ttg_file):
         ttg_df = pd.read_csv(ttg_file)
         
@@ -1772,7 +1758,8 @@ def evaluate_impc_trajectories(impc_dir, env_type, path_deviation_files, verbose
         'max_steps': max_steps
     }
 
-def display_clean_impc_metrics(trajectory_metrics, velocity_metrics, ttg_metrics, flow_rate, makespan, success_rate, environment, num_agents):
+def display_clean_impc_metrics(trajectory_metrics, velocity_metrics, ttg_metrics, flow_rate, makespan, success_rate, environment, num_agents,
+                               method_label="SOCIAL-IMPC-DR"):
     """Display IMPC DR metrics in clean minimal format."""
     print("\nRESULTS")
     
@@ -2094,7 +2081,7 @@ def run_social_cadrl(env_type='hallway', verbose=False):
                 print(f"Executing script directly: {script_path}")
                 with open(script_path, 'r') as f:
                     script_content = f.read()
-                exec(script_content, {'__name__': '__main__'})
+                exec(script_content, {'__name__': '__main__', '__file__': str(script_path)})
                 
             except Exception as run_error:
                 print(f"Error running CADRL script: {run_error}")
@@ -2175,7 +2162,10 @@ def main():
         try:
             choice = int(input("\nEnter method number (1-5): "))
             if choice in [1, 2, 3, 4, 5]:
+            choice = int(input("\nEnter method number (1-5): "))
+            if choice in [1, 2, 3, 4, 5]:
                 break
+            print("Invalid choice! Please enter 1, 2, 3, 4, or 5.")
             print("Invalid choice! Please enter 1, 2, 3, 4, or 5.")
         except ValueError:
             print("Invalid input! Please enter a number.")

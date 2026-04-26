@@ -1,5 +1,5 @@
 """
-DS-MPEPC implementation focused on the 4-robot position-swap (circle) scenario
+DS-MPEPC implementation
 from Figure 7 of:
 
   S. H. Arul, J. J. Park, and D. Manocha,
@@ -87,6 +87,15 @@ N_RANDOM_SAMPLES = 180
 def wrap_pi(a: float) -> float:
     return (a + np.pi) % (2.0 * np.pi) - np.pi
 
+def get_input(prompt, default, type_cast=str):
+    while True:
+        user_input = input(f"{prompt} (default: {default}): ")
+        if not user_input:
+            return default
+        try:
+            return type_cast(user_input)
+        except ValueError:
+            print(f"Invalid input! Please enter a valid {type_cast.__name__}.")
 
 def pose_to_ego(robot_pose, target_pose):
     """Return (r, theta, delta) for robot -> target in the egocentric frame."""
@@ -163,8 +172,6 @@ def ttc_disks(p1, v1, p2, v2, r_sum):
     t2 = (-b + sq) / (2.0 * a)
     if t1 > 0.0:
         return t1
-    if t2 > 0.0:
-        return 0.0
     return np.inf
 
 
@@ -185,6 +192,38 @@ def pc_eq5(d_eff, ttc, sigma_d):
     return float(reactive * anticip)
 
 
+def _ttc_disks_vec(dp, dv, r_sum):
+    """Vectorized ttc_disks. Inputs broadcast over leading axes.
+    dp, dv: arrays with last axis == 2 (relative pos / vel of robot - obstacle).
+    Returns ttc with shape = broadcast of dp.shape[:-1] and dv.shape[:-1]."""
+    a = np.sum(dv * dv, axis=-1)
+    b = 2.0 * np.sum(dp * dv, axis=-1)
+    c = np.sum(dp * dp, axis=-1) - r_sum * r_sum
+    disc = b * b - 4.0 * a * c
+    sqrt_disc = np.sqrt(np.maximum(disc, 0.0))
+    a_safe = np.where(a < 1e-12, 1.0, a)
+    t1 = (-b - sqrt_disc) / (2.0 * a_safe)
+    ttc = np.where(t1 > 0.0, t1, np.inf)
+    ttc = np.where((disc < 0.0) | (a < 1e-12), np.inf, ttc)
+    ttc = np.where(c <= 0.0, 0.0, ttc)
+    return ttc
+
+
+def _pc_eq5_vec(d_eff, ttc, sigma_d):
+    """Vectorized pc_eq5."""
+    safe_d = np.maximum(d_eff, 0.0)
+    reactive = np.exp(-(safe_d ** 2) / (sigma_d ** 2))
+    finite_pos = np.isfinite(ttc) & (ttc > 0.0)
+    safe_ttc = np.where(finite_pos, ttc, 1.0)
+    inv_ttc_sq = np.where(finite_pos, (1.0 / safe_ttc) ** 2, 0.0)
+    anticip = 1.0 - A_ANTICIP * np.exp(-inv_ttc_sq / (SIGMA_INV_TTC ** 2))
+    # ttc == 0 (already touching): anticipatory factor = 1
+    anticip = np.where(np.isfinite(ttc) & (ttc <= 0.0), 1.0, anticip)
+    pc = reactive * anticip
+    pc = np.where(d_eff <= 0.0, 1.0, pc)
+    return pc
+
+
 # ======================================================================
 # Trajectory cost
 # ======================================================================
@@ -194,61 +233,54 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius,
     """Compute J_tilde(q_{z*}) for a simulated trajectory."""
     N = len(vels)
     r_sum_dyn = 2.0 * agent_radius
-    r_sum_stat = agent_radius                      # static obstacles treated as points
+    # Static obstacles in this codebase are visualized as disks of agent_radius,
+    # so the effective collision sum is also 2 * agent_radius.
+    r_sum_stat = 2.0 * agent_radius
 
-    # --- per-step collision probability (closest obstacle at each step) ---
-    pc_arr = np.zeros(N + 1)
-    for k in range(N + 1):
-        p_r = poses[k, :2]
-        # robot instantaneous velocity along its heading
-        if k < N:
-            v_r = vels[k, 0] * np.array([np.cos(poses[k, 2]), np.sin(poses[k, 2])])
-        else:
-            v_r = vels[-1, 0] * np.array([np.cos(poses[-1, 2]), np.sin(poses[-1, 2])])
+    # --- robot pos/velocity at every step (heading-aligned linear vel) ---
+    p_r = poses[:, :2]                                          # (N+1, 2)
+    v_lin = np.concatenate([vels[:, 0], vels[-1:, 0]])          # (N+1,)
+    psi = poses[:, 2]
+    v_r = np.stack([v_lin * np.cos(psi), v_lin * np.sin(psi)], axis=1)  # (N+1, 2)
 
-        best = (np.inf, np.inf, SIGMA_D_STATIC)   # (pc, d_eff, sigma)
-        # static
-        for obs in static_obs_pos:
-            d = float(np.linalg.norm(p_r - obs)) - r_sum_stat
-            t = ttc_disks(p_r, v_r, obs, np.zeros(2), r_sum_stat)
-            p = pc_eq5(d, t, SIGMA_D_STATIC)
-            if p > best[0] or best[0] == np.inf:
-                best = (p, d, SIGMA_D_STATIC)
-        # dynamic (other agents, const-velocity prediction)
-        for j in range(dyn_obs_pred.shape[1]):
-            p_o = dyn_obs_pred[k, j]
-            v_o = dyn_obs_vel[j]
-            d = float(np.linalg.norm(p_r - p_o)) - r_sum_dyn
-            t = ttc_disks(p_r, v_r, p_o, v_o, r_sum_dyn)
-            p = pc_eq5(d, t, SIGMA_D_DYNAMIC)
-            if p > best[0] or best[0] == np.inf:
-                best = (p, d, SIGMA_D_DYNAMIC)
-        pc_arr[k] = best[0] if np.isfinite(best[0]) else 0.0
+    # --- per-step collision probability (max over obstacles at each step) ---
+    worst_pc = np.zeros(N + 1)
+
+    if static_obs_pos is not None and len(static_obs_pos) > 0:
+        static_arr = np.asarray(static_obs_pos, dtype=float)    # (S, 2)
+        dp_s = p_r[:, None, :] - static_arr[None, :, :]         # (N+1, S, 2)
+        dv_s = v_r[:, None, :]                                  # (N+1, 1, 2); obs vel = 0
+        d_eff_s = np.linalg.norm(dp_s, axis=-1) - r_sum_stat    # (N+1, S)
+        ttc_s = _ttc_disks_vec(dp_s, dv_s, r_sum_stat)
+        pc_s = _pc_eq5_vec(d_eff_s, ttc_s, SIGMA_D_STATIC)
+        worst_pc = np.maximum(worst_pc, pc_s.max(axis=1))
+
+    D = dyn_obs_pred.shape[1] if dyn_obs_pred.ndim == 3 else 0
+    if D > 0:
+        dp_d = p_r[:, None, :] - dyn_obs_pred                   # (N+1, D, 2)
+        dv_d = v_r[:, None, :] - dyn_obs_vel[None, :, :]        # (N+1, D, 2)
+        d_eff_d = np.linalg.norm(dp_d, axis=-1) - r_sum_dyn
+        ttc_d = _ttc_disks_vec(dp_d, dv_d, r_sum_dyn)
+        pc_d = _pc_eq5_vec(d_eff_d, ttc_d, SIGMA_D_DYNAMIC)
+        worst_pc = np.maximum(worst_pc, pc_d.max(axis=1))
+
+    pc_arr = worst_pc
 
     # --- survivability (cumulative product) ---
-    ps_arr = np.zeros(N + 1)
-    running = 1.0
-    for k in range(N + 1):
-        running *= (1.0 - pc_arr[k])
-        ps_arr[k] = running
+    ps_arr = np.cumprod(1.0 - pc_arr)
 
     # --- progress toward goal, weighted by ps ---
-    J_progress = 0.0
-    for k in range(1, N + 1):
-        d_k = float(np.linalg.norm(poses[k, :2] - goal_xy))
-        d_km1 = float(np.linalg.norm(poses[k - 1, :2] - goal_xy))
-        J_progress += ps_arr[k] * W_PROGRESS * (d_k - d_km1)
+    d_to_goal = np.linalg.norm(p_r - goal_xy, axis=1)           # (N+1,)
+    delta_d = d_to_goal[1:] - d_to_goal[:-1]                    # (N,)
+    J_progress = float(np.sum(ps_arr[1:] * W_PROGRESS * delta_d))
 
     # --- action cost ---
-    J_action = 0.0
-    for k in range(N):
-        J_action += (W_ACTION_V * vels[k, 0] ** 2 + W_ACTION_W * vels[k, 1] ** 2) * dt
+    J_action = float(np.sum(W_ACTION_V * vels[:, 0] ** 2
+                            + W_ACTION_W * vels[:, 1] ** 2) * dt)
 
     # --- collision cost ---
     phi_col = 1.0
-    J_collision = 0.0
-    for k in range(1, N + 1):
-        J_collision += (1.0 - ps_arr[k]) * W_COLLISION * phi_col
+    J_collision = float(np.sum((1.0 - ps_arr[1:]) * W_COLLISION * phi_col))
 
     # --- terminal cost (Eq. 6) ---
     term_pose = poses[-1]
@@ -261,22 +293,20 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius,
         v_toward = term_v * float(heading @ goal_vec) / d_goal
     else:
         v_toward = 0.0
-    if v_toward > 1e-3:
-        ttg = d_goal / v_toward
-    else:
-        ttg = np.inf
+    ttg = d_goal / v_toward if v_toward > 1e-3 else np.inf
 
     v_term_vec = vmax * heading
     ttc_term = np.inf
-    for obs in static_obs_pos:
-        t = ttc_disks(term_pose[:2], v_term_vec, obs, np.zeros(2), r_sum_stat)
-        if t < ttc_term:
-            ttc_term = t
-    for j in range(dyn_obs_pred.shape[1]):
-        t = ttc_disks(term_pose[:2], v_term_vec,
-                      dyn_obs_pred[-1, j], dyn_obs_vel[j], r_sum_dyn)
-        if t < ttc_term:
-            ttc_term = t
+    if static_obs_pos is not None and len(static_obs_pos) > 0:
+        static_arr = np.asarray(static_obs_pos, dtype=float)
+        dp_t = term_pose[:2] - static_arr                        # (S, 2)
+        ttc_s_term = _ttc_disks_vec(dp_t, v_term_vec, r_sum_stat)
+        ttc_term = min(ttc_term, float(ttc_s_term.min()))
+    if D > 0:
+        dp_t = term_pose[:2] - dyn_obs_pred[-1]                  # (D, 2)
+        dv_t = v_term_vec - dyn_obs_vel                          # (D, 2)
+        ttc_d_term = _ttc_disks_vec(dp_t, dv_t, r_sum_dyn)
+        ttc_term = min(ttc_term, float(ttc_d_term.min()))
 
     inv_ttg_sq = 0.0 if np.isinf(ttg) else (1.0 / max(ttg, 1e-6)) ** 2
     inv_ttc_sq = 0.0 if np.isinf(ttc_term) else (1.0 / max(ttc_term, 1e-3)) ** 2
@@ -318,12 +348,13 @@ def plan_one_step(robot_pose, goal_xy, agent_radius,
     if prev_z is not None:
         candidates.append(tuple(prev_z))
 
-    # random coverage
+    # random coverage — widened to allow lateral and rear-aimed targets so the
+    # planner can find escape maneuvers from symmetric deadlocks.
     for _ in range(N_RANDOM_SAMPLES):
-        r = rng.uniform(0.4, 6.0)
-        theta = rng.uniform(-1.2, 1.2)
-        delta = rng.uniform(-1.6, 1.6)
-        vm = rng.uniform(0.1, VMAX)
+        r = rng.uniform(0.2, 6.0)
+        theta = rng.uniform(-np.pi, np.pi)
+        delta = rng.uniform(-np.pi, np.pi)
+        vm = rng.uniform(0.0, VMAX)
         candidates.append((r, theta, delta, vm))
 
     best = None
@@ -361,7 +392,7 @@ def _logs_dirs():
     return anim_dir, traj_dir
 
 
-def save_gif(X, G, N, env_type, agent_radius):
+def save_gif(X, G, N, env_type, agent_radius, static_obs_pos=None):
     anim_dir, _ = _logs_dirs()
     filename = anim_dir / f"{env_type}_{N}agents.gif"
 
@@ -373,7 +404,14 @@ def save_gif(X, G, N, env_type, agent_radius):
     ax.set_ylim(StandardizedEnvironment.GRID_Y_MIN, StandardizedEnvironment.GRID_Y_MAX)
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3)
-    ax.set_title(f"DS-MPEPC: {N}-robot position swap")
+    ax.set_title(f"DS-MPEPC: {N}-robot {env_type or 'doorway'}")
+
+    # Static obstacles
+    for obs in (static_obs_pos or []):
+        ax.add_patch(patches.Circle((float(obs[0]), float(obs[1])),
+                                    radius=agent_radius,
+                                    facecolor='dimgray', edgecolor='black',
+                                    linewidth=0.5, zorder=2))
 
     # Goals
     for i in range(N):
@@ -439,7 +477,7 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
     all_reached = True
     for i in range(N):
         reached = False
-        agent_ttg = K
+        agent_ttg = -1  # sentinel: did not reach goal
         for k in range(K + 1):
             if np.linalg.norm(X[i, :, k] - G[i]) < goal_threshold:
                 agent_ttg = k
@@ -449,12 +487,13 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
             all_reached = False
         ttg_list.append((i, agent_ttg, reached))
 
-    completion_step = max(t for _, t, _ in ttg_list) if all_reached else K
+    # -1 means at least one robot failed to reach its goal within the sim window.
+    completion_step = max(t for _, t, _ in ttg_list) if all_reached else -1
 
     with open(out_dir / "completion_step.txt", "w") as f:
         f.write(str(completion_step))
 
-    with open(out_dir / "ttg_impc_dr.csv", "w", newline="") as f:
+    with open(out_dir / "ttg_dsmpepc.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["robot_id", "ttg", "reached_goal"])
         for rid, ttg, reached in ttg_list:
@@ -479,19 +518,27 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
     print(f"Trajectory CSVs saved to {out_dir}")
 
 
-# ======================================================================
-# 4-robot circle position-swap scenario (Figure 7 in DS-MPEPC)
-# ======================================================================
-def run_circle_swap(N=4, radius=3.0, T_sim=25.0, seed=0, verbose=True):
-    rng = np.random.default_rng(seed)
 
-    # Cardinal positions -> diagonally opposite
-    angles = np.linspace(0.0, 2.0 * np.pi, N, endpoint=False)
-    starts = np.stack([radius * np.cos(angles), radius * np.sin(angles)], axis=1)
-    goals = -starts
+def run_dsmpepc(N=4, radius=3.0, T_sim=25.0, seed=0, verbose=True,
+                    targets=None, initials=None, env='doorway', obstacles=None):
+    rng = np.random.default_rng(seed)
+    # Independent per-agent RNGs so sample streams don't interleave across agents.
+    agent_rngs = [np.random.default_rng(seed + 1000 + i) for i in range(N)]
+
+    user_supplied = initials is not None and targets is not None
+    if not user_supplied:
+        # Cardinal positions -> diagonally opposite
+        angles = np.linspace(0.0, 2.0 * np.pi, N, endpoint=False)
+        starts = np.stack([radius * np.cos(angles), radius * np.sin(angles)], axis=1)
+        goals = -starts
+    else:
+        goals = np.stack(targets, axis=0)
+        starts = np.stack(initials, axis=0)
+
     headings = np.arctan2(goals[:, 1] - starts[:, 1], goals[:, 0] - starts[:, 0])
-    # tiny asymmetry to break perfectly symmetric ties
-    headings = headings + rng.uniform(-0.02, 0.02, size=N)
+    if not user_supplied:
+        # Break perfectly symmetric ties only in the auto-generated circle scenario.
+        headings = headings + rng.uniform(-0.02, 0.02, size=N)
 
     agent_radius = StandardizedEnvironment.DEFAULT_AGENT_RADIUS
 
@@ -509,9 +556,10 @@ def run_circle_swap(N=4, radius=3.0, T_sim=25.0, seed=0, verbose=True):
     current_target = [None] * N
     current_vmax = [0.0] * N
 
-    static_obs_pos = []  # Figure 7 scenario has no static obstacles
+    static_obs_pos = [np.asarray(o, dtype=float) for o in (obstacles or [])]
 
-    print(f"Running DS-MPEPC 4-robot circle swap ({N} agents, radius={radius})...")
+    print(f"Running DS-MPEPC {env} ({N} agents, radius={radius}, "
+          f"static_obstacles={len(static_obs_pos)})...")
 
     for k in range(K_steps):
         # Current states
@@ -543,8 +591,15 @@ def run_circle_swap(N=4, radius=3.0, T_sim=25.0, seed=0, verbose=True):
             z_opt, _, _, _ = plan_one_step(
                 poses[i], goals[i], agent_radius,
                 static_obs_pos, dyn_pred, dyn_vel,
-                prev_z=prev_z[i], rng=rng,
+                prev_z=prev_z[i], rng=agent_rngs[i],
             )
+            if z_opt is None:
+                # Planner found no usable sample; hold the previous target if any,
+                # otherwise stop in place.
+                if current_target[i] is None:
+                    current_target[i] = poses[i].copy()
+                    current_vmax[i] = 0.0
+                continue
             prev_z[i] = z_opt
             r_z, theta_z, delta_z, vm_z = z_opt
             if r_z < 1e-3:
@@ -585,25 +640,121 @@ def run_circle_swap(N=4, radius=3.0, T_sim=25.0, seed=0, verbose=True):
 
     return X, goals, Uhist, K_steps, agent_radius
 
+def setup_doorway_scenario():
+    """Static-obstacle positions for the doorway scenario."""
+    print("Setting up Doorway Environment using standardized configuration...")
+    return StandardizedEnvironment.get_doorway_obstacles()
+
+def setup_hallway_scenario():
+    """Static-obstacle positions for the hallway scenario."""
+    print("Setting up Hallway Environment using standardized configuration...")
+    return StandardizedEnvironment.get_hallway_obstacles()
+
+def setup_intersection_scenario():
+    """Static-obstacle positions for the intersection scenario."""
+    print("Setting up Intersection Environment using standardized configuration...")
+    return StandardizedEnvironment.get_intersection_obstacles()
 
 def main():
-    env_type = sys.argv[1] if len(sys.argv) > 1 else 'circle_swap'
+    env_type = None
+    verbose_mode = True  # Default to verbose for backwards compatibility
+    
+    if len(sys.argv) > 1:
+        env_type = sys.argv[1]
+    
+    if len(sys.argv) > 2:
+        verbose_arg = sys.argv[2]
+        verbose_mode = (verbose_arg == '--verbose')
 
-    # The paper's 4-robot swap scenario is the only one we reproduce here.
-    if env_type not in ('circle_swap', 'circle', '4robots', 'default', None):
-        print(f"Note: DS-MPEPC app is configured only for the 4-robot circle "
-              f"position-swap scenario. Ignoring env_type={env_type!r}.")
+    obstacle_agents_x = []
+    if env_type == 'doorway':
+        obstacle_agents_x = setup_doorway_scenario()
+    elif env_type == 'hallway':
+        obstacle_agents_x = setup_hallway_scenario()
+    elif env_type == 'intersection':
+        obstacle_agents_x = setup_intersection_scenario()
+    
+    # --- Get User Input for Simulation ---
 
-    X, G, Uhist, K, agent_radius = run_circle_swap(N=4, radius=3.0, T_sim=25.0)
+    # Get parameters for the moving drones
+    num_moving_drones = get_input("Enter number of moving drones", 2, int)
+    
+    # Get simulation parameters from user - optimized per environment
+    min_radius = get_input("Enter minimum distance between drones", StandardizedEnvironment.DEFAULT_COLLISION_DISTANCE, float)
+    
+    print("\nConfigure moving drones:")
+    
+    # Print environment-specific instructions using standardized coordinates
+    if env_type == 'doorway':
+        print("\nDoorway Configuration:")
+        print("- The doorway has a vertical wall at x=0 with a gap between y=-2 and y=2")
+        print("- X coordinates should be between -5 and 5")
+        print("- Y coordinates should be between -7 and 7")
+    elif env_type == 'hallway':
+        print("\nHallway Configuration:")
+        print("- The hallway has walls at y=-2 and y=2")
+        print("- Robots should stay between y=-1.5 and y=1.5 (middle of hallway)")
+        print("- X coordinates should be between -5 and 5")
+    elif env_type == 'intersection':
+        print("\nIntersection Configuration:")
+        print("- The intersection has corridors with center at (0, 0)")
+        print("- Corridor width extends from -2 to 2 in both directions")
+        print("- X and Y coordinates should be between -5 and 5")
+    
+    # Get drone positions in ORCA-style individual configuration
+    ini_x_moving = []
+    target_moving = []
+    
+    # Get standardized default positions
+    standard_positions = StandardizedEnvironment.get_standard_agent_positions(env_type, num_moving_drones)
+    
+    # Convert to the format expected by the rest of the code
+    default_positions = []
+    for pos in standard_positions:
+        default_positions.append({
+            'start_x': pos['start'][0],
+            'start_y': pos['start'][1],
+            'goal_x': pos['goal'][0],
+            'goal_y': pos['goal'][1]
+        })
+    
+    for i in range(num_moving_drones):
+        print(f"\n--- Agent {i+1} Parameters ---")
+        
+        # Get default values for this drone (cycle through available defaults)
+        default_idx = i % len(default_positions)
+        defaults = default_positions[default_idx]
+        
+        # Get start position
+        start_x = get_input(f"Start X position (default: {defaults['start_x']})", defaults['start_x'], float)
+        start_y = get_input(f"Start Y position (default: {defaults['start_y']})", defaults['start_y'], float)
+        
+        # Get goal position  
+        goal_x = get_input(f"Goal X position (default: {defaults['goal_x']})", defaults['goal_x'], float)
+        goal_y = get_input(f"Goal Y position (default: {defaults['goal_y']})", defaults['goal_y'], float)
+        
+        # Store positions
+        ini_x_moving.append(np.array([start_x, start_y]))
+        target_moving.append(np.array([goal_x, goal_y]))
+        
+        print(f"Agent {i+1} configured: Start=({start_x}, {start_y}), Goal=({goal_x}, {goal_y})")
+    
+    X, G, Uhist, K, agent_radius = run_dsmpepc(
+        N=num_moving_drones, radius=3.0, T_sim=25.0,
+        targets=target_moving, initials=ini_x_moving,
+        verbose=verbose_mode, obstacles=obstacle_agents_x,
+        env=env_type or 'circle swap',
+    )
 
     print("\nSaving results...")
-    save_csvs(X, G, Uhist, N=4, K=K)
-    save_gif(X, G, N=4, env_type='circle_swap', agent_radius=agent_radius)
+    save_csvs(X, G, Uhist, N=num_moving_drones, K=K)
+    save_gif(X, G, N=num_moving_drones, env_type=env_type,
+             agent_radius=agent_radius, static_obs_pos=obstacle_agents_x)
 
     print("\nSimulation Results:")
     print(f"Number of steps: {K}   (t={K * DT_SIM:.2f}s)")
     print("Final positions:")
-    for i in range(4):
+    for i in range(num_moving_drones):
         d = float(np.linalg.norm(X[i, :, -1] - G[i]))
         status = "reached goal" if d < 0.3 else f"dist to goal: {d:.3f}"
         print(f"  Agent {i+1}: ({X[i, 0, -1]:+.3f}, {X[i, 1, -1]:+.3f}) - {status}")
