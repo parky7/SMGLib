@@ -1295,10 +1295,16 @@ def run_dsmpepc(env_type='doorway', verbose=False):
     print("\nRunning dsmpepc simulation with standardized environment...")
     
     dsmpepc_dir = Path("src/methods/DS-MPEPC").resolve()
+    dsmpepc_logs_dir = Path(__file__).resolve().parent / 'logs' / 'DS-MPEPC' / 'trajectories'
     original_dir = os.getcwd()
     
     print(f"DS-MPEPC directory: {dsmpepc_dir}")
     print(f"Original directory: {original_dir}")
+
+    if dsmpepc_logs_dir.exists():
+        shutil.rmtree(dsmpepc_logs_dir)
+
+    dsmpepc_logs_dir.mkdir(parents=True, exist_ok=True)
     
     try:
         # Setup marker (same pattern as MPEPC)
@@ -1420,10 +1426,16 @@ def run_mpepc(env_type='doorway', verbose=False):
     
     # Create IMPC-DR-specific working directory
     mpepc_dir = Path("src/methods/MPEPC").resolve()  # Get absolute path
+    mpepc_logs_dir = Path(__file__).resolve().parent / 'logs' / 'MPEPC' / 'trajectories'
     original_dir = os.getcwd()
     
     print(f"MPEPC directory: {mpepc_dir}")
     print(f"Original directory: {original_dir}")
+
+    if mpepc_logs_dir.exists():
+        shutil.rmtree(mpepc_logs_dir)
+
+    mpepc_logs_dir.mkdir(parents=True, exist_ok=True)
     
     try:
         # Check if IMPC-DR environment is set up, create if not
