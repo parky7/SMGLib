@@ -64,12 +64,33 @@ SIGMA_INV_TTG = 1e-3           # paper value
 SIGMA_D_STATIC = 0.1           # MPEPC default
 SIGMA_D_DYNAMIC = 0.2          # MPEPC default
 
-# Cost weights
-W_PROGRESS = 1.0
-W_ACTION_V = 0.15
-W_ACTION_W = 0.05
-W_COLLISION = 0.4
-W_TERMINAL = 5.0
+# # Cost weights
+# W_PROGRESS = 2.0
+# W_ACTION_V = 0.15
+# W_ACTION_W = 0.05
+# W_COLLISION = 0.4
+# W_TERMINAL = 5.0
+
+# Weights for doorway
+W_PROGRESS = 4.9537
+W_ACTION_V = 0.0758
+W_ACTION_W = 0.9790
+W_COLLISION = 4.8877
+W_TERMINAL = 1.5572
+
+# Weights for hallway
+# W_PROGRESS = 3.1246
+# W_ACTION_V = 0.0242
+# W_ACTION_W = 0.1364
+# W_COLLISION = 2.3477
+# W_TERMINAL = 1.3300
+
+# weights for intersection
+# W_PROGRESS = 4.5056
+# W_ACTION_V = 0.0152
+# W_ACTION_W = 0.8296
+# W_COLLISION = 0.1750
+# W_TERMINAL = 12.5631
 
 # Planning / simulation
 T_HORIZON = 5.0
@@ -78,7 +99,7 @@ N_HORIZON = int(round(T_HORIZON / DT_PLAN))   # 25
 DT_SIM = 0.1
 
 # Sampling
-N_RANDOM_SAMPLES = 180
+N_RANDOM_SAMPLES = 200
 
 
 # ======================================================================
