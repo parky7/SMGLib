@@ -27,6 +27,7 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.lines as mlines
 import matplotlib.patches as patches
 from pathlib import Path
+from scipy.optimize import minimize
 
 sys.path.append(str(Path(__file__).resolve().parents[3] / 'src'))
 from utils import StandardizedEnvironment
@@ -413,6 +414,23 @@ def plan_one_step(robot_pose, goal_xy, agent_radius,
             best_poses = poses
             best_vels = vels
 
+    # gradient-based refinement from best candidate
+    def cost_fn(z):
+        r, theta, delta, vmax = z
+        target = ego_to_target(robot_pose, r, theta, delta)
+        poses, vels = simulate_trajectory(robot_pose, target, vmax)
+        return trajectory_cost(poses, vels, goal_xy, agent_radius,
+                               static_obs_pos, dyn_obs_pred, dyn_obs_vel, vmax)
+
+    bounds = [(0.05, 8.0), (-1.2, 1.2), (-1.8, 1.8), (0.0, VMAX)]
+    result = minimize(cost_fn, list(best), method='L-BFGS-B', bounds=bounds,
+                      options={'maxiter': 50, 'ftol': 1e-4})
+    if result.fun < best_cost:
+        best       = result.x
+        best_cost  = result.fun
+        target     = ego_to_target(robot_pose, *best[:3])
+        best_poses, best_vels = simulate_trajectory(robot_pose, target, best[3])
+
     return best, best_cost, best_poses, best_vels
 
 
@@ -506,8 +524,9 @@ def save_gif(X, G, N, env_type, agent_radius, static_obs_pos=None):
     plt.close(fig)
 
 
-def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
-    out_dir = Path(__file__).resolve().parent
+def save_csvs(X, G, Uhist, N, K, goal_threshold=0.4):
+    ds_mpepc_dir = Path(__file__).resolve().parents[3] / 'logs' / 'DS-MPEPC' / 'trajectories'
+    ds_mpepc_dir.mkdir(parents=True, exist_ok=True)
 
     ttg_list = []
     all_reached = True
@@ -526,10 +545,10 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
     # -1 means at least one robot failed to reach its goal within the sim window.
     completion_step = max(t for _, t, _ in ttg_list) if all_reached else -1
 
-    with open(out_dir / "completion_step.txt", "w") as f:
+    with open(ds_mpepc_dir / "completion_step.txt", "w") as f:
         f.write(str(completion_step))
 
-    with open(out_dir / "ttg_dsmpepc.csv", "w", newline="") as f:
+    with open(ds_mpepc_dir / "ttg_dsmpepc.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["robot_id", "ttg", "reached_goal"])
         for rid, ttg, reached in ttg_list:
@@ -539,19 +558,19 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
         num_steps = K + 1
         nominal_x = np.linspace(X[i, 0, 0], G[i, 0], num_steps)
         nominal_y = np.linspace(X[i, 1, 0], G[i, 1], num_steps)
-        with open(out_dir / f"path_deviation_robot_{i}.csv", "w", newline="") as f:
+        with open(ds_mpepc_dir / f"path_deviation_robot_{i}.csv", "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["actual_x", "actual_y", "nominal_x", "nominal_y"])
             for k in range(num_steps):
                 w.writerow([X[i, 0, k], X[i, 1, k], nominal_x[k], nominal_y[k]])
 
-        with open(out_dir / f"avg_delta_velocity_robot_{i}.csv", "w", newline="") as f:
+        with open(ds_mpepc_dir / f"avg_delta_velocity_robot_{i}.csv", "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["vx", "vy"])
             for k in range(K):
                 w.writerow([Uhist[i, 0, k], Uhist[i, 1, k]])
 
-    print(f"Trajectory CSVs saved to {out_dir}")
+    print(f"Trajectory CSVs saved to {ds_mpepc_dir}")
 
 
 

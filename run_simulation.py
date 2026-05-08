@@ -1146,161 +1146,132 @@ def run_cbf_rm(env_type='doorway', verbose=False):
         # 3. Execution (Subprocess Only)
         print(f"Executing script directly: {script_path}")
         os.chdir(cbf_rm_dir)
+        print(f"Changed to directory: {cbf_rm_dir}")
         
-        # Ensure you have a function or variable that gets the exact path to the venv python
-        # e.g., venv_python = str(cbf_rm_dir / "venv" / "bin" / "python")
-        venv_python = get_venv_python() 
-        verbose_arg = '--verbose' if verbose else '--clean'
+        # Add the CBF-RM directory to Python path
+        import sys
+        sys.path.insert(0, str(cbf_rm_dir))
         
-        print("running")
-        result = subprocess.run(
-            [venv_python, "app.py", env_type, verbose_arg],
-            cwd=cbf_rm_dir
-        )
-        print("ran")
-        
-        # 4. Error Handling
-        if result.returncode != 0:
-            print("✗ CBF-RM simulation failed")
-            print(f"Error: {result.stderr}")
-            return
+        try:
+            # Import and run the CBF-RM script
+            print(f"Starting CBF-RM simulation with environment: {env_type}")
             
-        print("✓ CBF-RM simulation completed successfully!")
-        if verbose:
-            print(result.stdout)
+            # Clear any existing app module to avoid conflicts
+            if 'app' in sys.modules:
+                del sys.modules['app']
             
-        # 5. Metrics Evaluation (Written only once)
-        path_deviation_files = list(cbf_rm_dir.glob("path_deviation_robot_*.csv"))
-        
-        if not path_deviation_files:
-            print("⚠ No trajectory files found")
-            return
-            
-        print(f"✓ Found {len(path_deviation_files)} trajectory files")
-        
-        trajectory_results = evaluate_impc_trajectories(cbf_rm_dir, env_type, path_deviation_files, verbose=verbose)
-        velocity_metrics = evaluate_impc_velocities(cbf_rm_dir, verbose=verbose)
-        
-        if not verbose and trajectory_results:
-            display_clean_impc_metrics(
-                trajectory_results['trajectory_metrics'],
-                velocity_metrics,
-                trajectory_results['ttg_metrics'],
-                trajectory_results['flow_rate'],
-                trajectory_results['makespan'],
-                trajectory_results['success_rate'],
-                trajectory_results['environment'],
-                trajectory_results['num_agents']
-            )
+            # Try to run app directly
+            try:
+                import app
+                print("✓ Successfully imported app")
+                
+                # Call the main function from app with environment type and verbose mode
+                # We need to pass the environment type and verbose mode as command line arguments
+                import sys
+                original_argv = sys.argv.copy()
+                sys.argv = ['app.py', env_type, '--verbose' if verbose else '--clean']
+                
+                try:
+                    # Call the main function if it exists, otherwise run the script
+                    if hasattr(app, 'main'):
+                        result = app.main()
+                    else:
+                        # Execute the script content
+                        with open(script_path, 'r') as f:
+                            script_content = f.read()
+                        exec(script_content, {'__name__': '__main__'})
+                        result = 0
+                    
+                    if result == 0 or result is None:  # Some scripts may not return a value
+                        print("✓ CBF-RM simulation completed successfully!")
+                        
+                        # Look for generated trajectory files
+                        cbf_rm_logs_dir = Path(__file__).resolve().parent / 'logs' / 'CBF-RM' / 'trajectories'
+                        path_deviation_files = list(cbf_rm_logs_dir.glob("path_deviation_robot_*.csv"))
+                        if path_deviation_files:
+                            print(f"✓ Found {len(path_deviation_files)} trajectory files")
+                            
+                            # Evaluate trajectories and velocities
+                            # Use the user-selected verbose mode
+                            
+                            trajectory_results = evaluate_impc_trajectories(cbf_rm_logs_dir, env_type, path_deviation_files, verbose=verbose)
+                            velocity_metrics = evaluate_impc_velocities(cbf_rm_logs_dir, verbose=verbose)
+                            
+                            # Display clean metrics if not in verbose mode
+                            if not verbose and trajectory_results:
+                                display_clean_impc_metrics(
+                                    trajectory_results['trajectory_metrics'],
+                                    velocity_metrics,
+                                    trajectory_results['ttg_metrics'],
+                                    trajectory_results['flow_rate'],
+                                    trajectory_results['makespan'],
+                                    trajectory_results['success_rate'],
+                                    trajectory_results['environment'],
+                                    trajectory_results['num_agents']
+                                )
+                        else:
+                            print("⚠ No trajectory files found")
+                    else:
+                        print("✗ CBF-RM simulation completed with errors")
 
-    except Exception as e:
-        print(f"✗ Error running CBF-RM: {e}")
-        traceback.print_exc()
-        
-    finally:
-        # 6. Cleanup
-        os.chdir(original_dir)
+                finally:
+                    # Restore original argv
+                    sys.argv = original_argv
 
-def run_dsmpepc(env_type='doorway', verbose=False):
-    """Run dsmpepc by switching to its directory and calling app.py via subprocess."""
-    print("\nRunning dsmpepc simulation with standardized environment...")
-    
-    # 1. Path Setup
-    dsmpepc_dir = Path("src/methods/DS-MPEPC").resolve()
-    script_path = dsmpepc_dir / "DSMPEPC.py"
-    original_dir = os.getcwd()
-    
-    print(f"DSMPEPC directory: {dsmpepc_dir}")
-    print(f"Original directory: {original_dir}")
-    
-    if not script_path.exists():
-        print(f"✗ DSMPEPC script not found at: {script_path}")
-        return
+            except ImportError as import_error:
+                print(f"Import error: {import_error}")
+                print("Trying alternative execution method...")
 
-    try:
-        # 2. Environment Setup
-        setup_marker = dsmpepc_dir / "venv" / "dsmpepc_setup_complete"
+                # Alternative: execute the script file directly with subprocess
+                print(f"Executing script directly: {script_path}")
+                verbose_arg = '--verbose' if verbose else '--clean'
+                result = subprocess.run([get_venv_python(), "app.py", env_type, verbose_arg],
+                                      cwd=cbf_rm_dir, capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    print("✓ CBF-RM simulation completed successfully!")
+                    print(result.stdout)
+                    
+                    # Look for generated trajectory files
+                    path_deviation_files = list(cbf_rm_logs_dir.glob("path_deviation_robot_*.csv"))
+                    if path_deviation_files:
+                        print(f"✓ Found {len(path_deviation_files)} trajectory files")
+                        
+                        # Evaluate trajectories and velocities
+                        trajectory_results = evaluate_impc_trajectories(cbf_rm_logs_dir, env_type, path_deviation_files, verbose=verbose)
+                        velocity_metrics = evaluate_impc_velocities(cbf_rm_logs_dir, verbose=verbose)
+                        
+                        # Display clean metrics if not in verbose mode
+                        if not verbose and trajectory_results:
+                            display_clean_mpepc_metrics(
+                                trajectory_results['trajectory_metrics'],
+                                velocity_metrics,
+                                trajectory_results['ttg_metrics'],
+                                trajectory_results['flow_rate'],
+                                trajectory_results['makespan'],
+                                trajectory_results['success_rate'],
+                                trajectory_results['environment'],
+                                trajectory_results['num_agents']
+                            )
+                    else:
+                        print("⚠ No trajectory files found")
+                else:
+                    print("✗ CBF-RM simulation failed")
+                    print(f"Error: {result.stderr}")
+                
+            except Exception as run_error:
+                print(f"Error running CBF-RM script: {run_error}")
+                import traceback
+                traceback.print_exc()
+                
+        finally:
+            # Remove CBF-RM path from sys.path
+            if str(cbf_rm_dir) in sys.path:
+                sys.path.remove(str(cbf_rm_dir))
+            # Clean up imported module
+            if 'app' in sys.modules:
+                del sys.modules['app']
         
-        if not setup_marker.exists():
-            print("\n" + "="*50)
-            print("DSMPEPC ENVIRONMENT SETUP")
-            print("="*50)
-            if not setup_dsmpepc_environment(dsmpepc_dir):
-                print("✗ Failed to set up DSMPEPC environment!")
-                return
-            print("✓ DSMPEPC environment setup complete!\n" + "="*50)
-            
-        # 3. Execution (Subprocess Only)
-        print(f"Executing script directly: {script_path}")
-        os.chdir(dsmpepc_dir)
-        
-        # Ensure you have a function or variable that gets the exact path to the venv python
-        # e.g., venv_python = str(dsmpepc_dir / "venv" / "bin" / "python")
-        venv_python = get_venv_python() 
-        verbose_arg = '--verbose' if verbose else '--clean'
-        
-        print("running")
-        result = subprocess.run(
-            [venv_python, "DSMPEPC.py", env_type, verbose_arg],
-            cwd=dsmpepc_dir
-        )
-        print("ran")
-        
-        # 4. Error Handling
-        if result.returncode != 0:
-            print("✗ DSMPEPC simulation failed")
-            print(f"Error: {result.stderr}")
-            return
-            
-        print("✓ DSMPEPC simulation completed successfully!")
-        if verbose:
-            print(result.stdout)
-            
-        # 5. Metrics Evaluation (Written only once)
-        path_deviation_files = list(dsmpepc_dir.glob("path_deviation_robot_*.csv"))
-        
-        if not path_deviation_files:
-            print("⚠ No trajectory files found")
-            return
-            
-        print(f"✓ Found {len(path_deviation_files)} trajectory files")
-        
-        trajectory_results = evaluate_impc_trajectories(
-            dsmpepc_dir, env_type, path_deviation_files,
-            verbose=verbose, ttg_filename="ttg_dsmpepc.csv",
-        )
-        velocity_metrics = evaluate_impc_velocities(dsmpepc_dir, verbose=verbose)
-
-        if not verbose and trajectory_results:
-            display_clean_impc_metrics(
-                trajectory_results['trajectory_metrics'],
-                velocity_metrics,
-                trajectory_results['ttg_metrics'],
-                trajectory_results['flow_rate'],
-                trajectory_results['makespan'],
-                trajectory_results['success_rate'],
-                trajectory_results['environment'],
-                trajectory_results['num_agents'],
-                method_label="DS-MPEPC",
-            )
-
-    except Exception as e:
-        print(f"✗ Error running DSMPEPC: {e}")
-        traceback.print_exc()
-        
-    finally:
-        # 6. Cleanup
-        os.chdir(original_dir)
-
-def setup_dsmpepc_environment(dsmpepc_dir):
-    """Set up DSMPEPC environment. DSMPEPC uses only numpy/matplotlib/scipy
-    which are available in the main environment, so just create the marker."""
-    try:
-        venv_dir = dsmpepc_dir / "venv"
-        venv_dir.mkdir(parents=True, exist_ok=True)
-        setup_marker = venv_dir / "dsmpepc_setup_complete"
-        setup_marker.touch()
-        return True
     except Exception as e:
         print(f"Error setting up DSMPEPC environment: {e}")
         return False
@@ -1318,6 +1289,334 @@ def setup_cbf_rm_environment(cbf_rm_dir):
         print(f"Error setting up CBF-RM environment: {e}")
         return False
 
+
+def run_dsmpepc(env_type='doorway', verbose=False):
+    """Run dsmpepc by switching to its directory and calling DSMPEPC.py"""
+    print("\nRunning dsmpepc simulation with standardized environment...")
+    
+    dsmpepc_dir = Path("src/methods/DS-MPEPC").resolve()
+    dsmpepc_logs_dir = Path(__file__).resolve().parent / 'logs' / 'DS-MPEPC' / 'trajectories'
+    original_dir = os.getcwd()
+    
+    print(f"DS-MPEPC directory: {dsmpepc_dir}")
+    print(f"Original directory: {original_dir}")
+
+    if dsmpepc_logs_dir.exists():
+        shutil.rmtree(dsmpepc_logs_dir)
+
+    dsmpepc_logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Setup marker (same pattern as MPEPC)
+        dsmpepc_venv = dsmpepc_dir / "venv"
+        setup_marker = dsmpepc_venv / "dsmpepc_setup_complete"
+        
+        if not setup_marker.exists():
+            print("\n" + "="*50)
+            print("DS-MPEPC ENVIRONMENT SETUP")
+            print("="*50)
+            print("First-time setup: Preparing DS-MPEPC environment...")
+            
+            if not setup_dsmpepc_environment(dsmpepc_dir):
+                print("✗ Failed to set up DS-MPEPC environment!")
+                return
+            
+            print("✓ DS-MPEPC environment setup complete!")
+            print("="*50)
+        
+        script_path = dsmpepc_dir / "DSMPEPC.py"
+        
+        if not script_path.exists():
+            print(f"✗ DSMPEPC script not found at: {script_path}")
+            if dsmpepc_dir.exists():
+                print(f"Directory contents: {list(dsmpepc_dir.iterdir())}")
+            else:
+                print(f"Directory doesn't exist: {dsmpepc_dir}")
+            return
+        else:
+            print(f"✓ Found DSMPEPC script at: {script_path}")
+            
+        os.chdir(dsmpepc_dir)
+        print(f"Changed to directory: {dsmpepc_dir}")
+        
+        sys.path.insert(0, str(dsmpepc_dir))
+        
+        try:
+            print(f"Starting DS-MPEPC simulation with environment: {env_type}")
+            
+            if 'DSMPEPC' in sys.modules:
+                del sys.modules['DSMPEPC']
+            
+            import DSMPEPC
+            print("✓ Successfully imported DSMPEPC")
+            
+            original_argv = sys.argv.copy()
+            sys.argv = ['DSMPEPC.py', env_type, '--verbose' if verbose else '--clean']
+            
+            try:
+                if hasattr(DSMPEPC, 'main'):
+                    result = DSMPEPC.main()
+                else:
+                    with open(script_path, 'r') as f:
+                        script_content = f.read()
+                    exec(script_content, {'__name__': '__main__'})
+                    result = 0
+                
+                if result == 0 or result is None:
+                    print("✓ DS-MPEPC simulation completed successfully!")
+                    
+                    dsmpepc_logs_dir = Path(__file__).resolve().parent / 'logs' / 'DS-MPEPC' / 'trajectories'
+                    path_deviation_files = list(dsmpepc_logs_dir.glob("path_deviation_robot_*.csv"))
+                    
+                    if path_deviation_files:
+                        print(f"✓ Found {len(path_deviation_files)} trajectory files")
+                        
+                        trajectory_results = evaluate_impc_trajectories(dsmpepc_logs_dir, env_type, path_deviation_files, verbose=verbose, ttg_filename='ttg_dsmpepc.csv')
+                        velocity_metrics = evaluate_impc_velocities(dsmpepc_logs_dir, verbose=verbose)
+                        
+                        if not verbose and trajectory_results:
+                            display_clean_mpepc_metrics(
+                                trajectory_results['trajectory_metrics'],
+                                velocity_metrics,
+                                trajectory_results['ttg_metrics'],
+                                trajectory_results['flow_rate'],
+                                trajectory_results['makespan'],
+                                trajectory_results['success_rate'],
+                                trajectory_results['environment'],
+                                trajectory_results['num_agents'],
+                                method_label="DS-MPEPC"
+                            )
+                    else:
+                        print("⚠ No trajectory files found")
+                else:
+                    print("✗ DS-MPEPC simulation completed with errors")
+            
+            finally:
+                sys.argv = original_argv
+        
+        finally:
+            if str(dsmpepc_dir) in sys.path:
+                sys.path.remove(str(dsmpepc_dir))
+            if 'DSMPEPC' in sys.modules:
+                del sys.modules['DSMPEPC']
+        
+    except Exception as e:
+        print(f"✗ Error running DS-MPEPC: {e}")
+        traceback.print_exc()
+    finally:
+        os.chdir(original_dir)
+
+
+def setup_dsmpepc_environment(dsmpepc_dir):
+    """Same as MPEPC environment setup."""
+    try:
+        venv_dir = dsmpepc_dir / "venv"
+        venv_dir.mkdir(parents=True, exist_ok=True)
+        setup_marker = venv_dir / "dsmpepc_setup_complete"
+        setup_marker.touch()
+        return True
+    except Exception as e:
+        print(f"Error setting up DS-MPEPC environment: {e}")
+        return False
+
+
+def run_mpepc(env_type='doorway', verbose=False):
+    """Run mpepc by switching to its directory and calling mpepc.py"""
+    print("\nRunning mpepc simulation with standardized environment...")
+    
+    # Create IMPC-DR-specific working directory
+    mpepc_dir = Path("src/methods/MPEPC").resolve()  # Get absolute path
+    mpepc_logs_dir = Path(__file__).resolve().parent / 'logs' / 'MPEPC' / 'trajectories'
+    original_dir = os.getcwd()
+    
+    print(f"MPEPC directory: {mpepc_dir}")
+    print(f"Original directory: {original_dir}")
+
+    if mpepc_logs_dir.exists():
+        shutil.rmtree(mpepc_logs_dir)
+
+    mpepc_logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Check if IMPC-DR environment is set up, create if not
+        mpepc_venv = mpepc_dir / "venv"
+        setup_marker = mpepc_venv / "mpepc_setup_complete"
+        
+        if not setup_marker.exists():
+            print("\n" + "="*50)
+            print("MPEPC ENVIRONMENT SETUP")
+            print("="*50)
+            print("First-time setup: Preparing MPEPC environment...")
+            
+            if not setup_mpepc_environment(mpepc_dir):
+                print("✗ Failed to set up MPEPC environment!")
+                return
+            
+            print("✓ MPEPC environment setup complete!")
+            print("="*50)
+        
+        # Use the original script (will be modified to use standardized environment)
+        script_path = mpepc_dir / "mpepc.py"
+        
+        # Verify the script exists
+        if not script_path.exists():
+            print(f"✗ MPEPC script not found at: {script_path}")
+            # Try to list what's actually in the directory
+            if mpepc_dir.exists():
+                print(f"Directory contents: {list(mpepc_dir.iterdir())}")
+            else:
+                print(f"Directory doesn't exist: {mpepc_dir}")
+            return
+        else:
+            print(f"✓ Found MPEPC script at: {script_path}")
+            
+        # Change to the MPEPC directory
+        os.chdir(mpepc_dir)
+        print(f"Changed to directory: {mpepc_dir}")
+        
+        # Add the MPEPC directory to Python path
+        import sys
+        sys.path.insert(0, str(mpepc_dir))
+        
+        try:
+            # Import and run the MPEPC script
+            print(f"Starting MPEPC simulation with environment: {env_type}")
+            
+            # Clear any existing mpepc module to avoid conflicts
+            if 'mpepc' in sys.modules:
+                del sys.modules['mpepc']
+            
+            # Try to run mpepc directly
+            try:
+                import mpepc
+                print("✓ Successfully imported mpepc")
+                
+                # Call the main function from mpepc with environment type and verbose mode
+                # We need to pass the environment type and verbose mode as command line arguments
+                import sys
+                original_argv = sys.argv.copy()
+                sys.argv = ['mpepc.py', env_type, '--verbose' if verbose else '--clean']
+                
+                try:
+                    # Call the main function if it exists, otherwise run the script
+                    if hasattr(mpepc, 'main'):
+                        result = mpepc.main()
+                    else:
+                        # Execute the script content
+                        with open(script_path, 'r') as f:
+                            script_content = f.read()
+                        exec(script_content, {'__name__': '__main__'})
+                        result = 0
+                    
+                    if result == 0 or result is None:  # Some scripts may not return a value
+                        print("✓ MPEPC simulation completed successfully!")
+                        
+                        # Look for generated trajectory files
+                        mpepc_logs_dir = Path(__file__).resolve().parent / 'logs' / 'MPEPC' / 'trajectories'
+                        path_deviation_files = list(mpepc_logs_dir.glob("path_deviation_robot_*.csv"))
+                        if path_deviation_files:
+                            print(f"✓ Found {len(path_deviation_files)} trajectory files")
+                            
+                            # Evaluate trajectories and velocities
+                            # Use the user-selected verbose mode
+                            
+                            trajectory_results = evaluate_impc_trajectories(mpepc_logs_dir, env_type, path_deviation_files, verbose=verbose, ttg_filename='ttg_mpepc.csv')
+                            velocity_metrics = evaluate_impc_velocities(mpepc_logs_dir, verbose=verbose)
+                            
+                            # Display clean metrics if not in verbose mode
+                            if not verbose and trajectory_results:
+                                display_clean_mpepc_metrics(
+                                    trajectory_results['trajectory_metrics'],
+                                    velocity_metrics,
+                                    trajectory_results['ttg_metrics'],
+                                    trajectory_results['flow_rate'],
+                                    trajectory_results['makespan'],
+                                    trajectory_results['success_rate'],
+                                    trajectory_results['environment'],
+                                    trajectory_results['num_agents']
+                                )
+                        else:
+                            print("⚠ No trajectory files found")
+                    else:
+                        print("✗ MPEPC simulation completed with errors")
+
+                finally:
+                    # Restore original argv
+                    sys.argv = original_argv
+
+            except ImportError as import_error:
+                print(f"Import error: {import_error}")
+                print("Trying alternative execution method...")
+
+                # Alternative: execute the script file directly with subprocess
+                print(f"Executing script directly: {script_path}")
+                verbose_arg = '--verbose' if verbose else '--clean'
+                result = subprocess.run([get_venv_python(), "mpepc.py", env_type, verbose_arg],
+                                      cwd=mpepc_dir, capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    print("✓ MPEPC simulation completed successfully!")
+                    print(result.stdout)
+                    
+                    # Look for generated trajectory files
+                    path_deviation_files = list(mpepc_logs_dir.glob("path_deviation_robot_*.csv"))
+                    if path_deviation_files:
+                        print(f"✓ Found {len(path_deviation_files)} trajectory files")
+                        
+                        # Evaluate trajectories and velocities
+                        trajectory_results = evaluate_impc_trajectories(mpepc_logs_dir, env_type, path_deviation_files, verbose=verbose, ttg_filename='ttg_mpepc.csv')
+                        velocity_metrics = evaluate_impc_velocities(mpepc_logs_dir, verbose=verbose)
+                        
+                        # Display clean metrics if not in verbose mode
+                        if not verbose and trajectory_results:
+                            display_clean_mpepc_metrics(
+                                trajectory_results['trajectory_metrics'],
+                                velocity_metrics,
+                                trajectory_results['ttg_metrics'],
+                                trajectory_results['flow_rate'],
+                                trajectory_results['makespan'],
+                                trajectory_results['success_rate'],
+                                trajectory_results['environment'],
+                                trajectory_results['num_agents']
+                            )
+                    else:
+                        print("⚠ No trajectory files found")
+                else:
+                    print("✗ MPEPC simulation failed")
+                    print(f"Error: {result.stderr}")
+                
+            except Exception as run_error:
+                print(f"Error running MPEPC script: {run_error}")
+                import traceback
+                traceback.print_exc()
+                
+        finally:
+            # Remove MPEPC path from sys.path
+            if str(mpepc_dir) in sys.path:
+                sys.path.remove(str(mpepc_dir))
+            # Clean up imported module
+            if 'mpepc' in sys.modules:
+                del sys.modules['mpepc']
+        
+    except Exception as e:
+        print(f"✗ Error running MPEPC: {e}")
+    finally:
+        os.chdir(original_dir)
+
+
+def setup_mpepc_environment(mpepc_dir):
+    """Set up MPEPC environment. MPEPC uses only numpy/matplotlib/scipy
+    which are available in the main environment, so just create the marker."""
+    try:
+        venv_dir = mpepc_dir / "venv"
+        venv_dir.mkdir(parents=True, exist_ok=True)
+        setup_marker = venv_dir / "mpepc_setup_complete"
+        setup_marker.touch()
+        return True
+    except Exception as e:
+        print(f"Error setting up MPEPC environment: {e}")
+        return False
+    
 
 def setup_impc_environment(impc_dir):
     """Set up IMPC-DR-specific virtual environment with compatible dependencies."""
@@ -1595,10 +1894,48 @@ def evaluate_impc_trajectories(impc_dir, env_type, path_deviation_files, verbose
         'max_steps': max_steps
     }
 
+def display_clean_mpepc_metrics(trajectory_metrics, velocity_metrics, ttg_metrics,
+        flow_rate, makespan, success_rate, environment, num_agents, method_label="MPEPC"):
+    """Display clean, minimal metrics for MPEPC or DS-MPEPC."""
+
+    print("\nRESULTS")
+
+    # Count successful agents
+    successful_count = sum(
+        1 for rid in ttg_metrics
+        if ttg_metrics[rid].get('reached_goal', False)
+    )
+
+    print(f"Method: {method_label}")
+    print(f"Environment: {environment}  "
+          f"Success Rate: {success_rate:.1f}% ({successful_count}/{num_agents})  "
+          f"Makespan: {makespan:.2f}s  Flow Rate: {flow_rate:.4f}")
+    print()
+
+    print("Agent     TTG    Avg ΔV    Path Dev    Hausdorff")
+
+    # Sorted robot IDs for consistent output
+    robot_ids = sorted(
+        set(trajectory_metrics.keys())
+        | set(velocity_metrics.keys())
+        | set(ttg_metrics.keys())
+    )
+
+    for rid in robot_ids:
+        ttg = ttg_metrics.get(rid, {}).get('ttg', 0)
+        avg_delta_v = velocity_metrics.get(rid, 0.0)
+
+        path_dev   = trajectory_metrics.get(rid, {}).get('l2_norm', 0.0)
+        hausdorff  = trajectory_metrics.get(rid, {}).get('hausdorff_dist', 0.0)
+
+        print(f"Robot {rid:<2}   {ttg:<5} {avg_delta_v:<8.3f} "
+              f"{path_dev:<11.3f} {hausdorff:<11.3f}")
+
+
 def display_clean_impc_metrics(trajectory_metrics, velocity_metrics, ttg_metrics, flow_rate, makespan, success_rate, environment, num_agents,
                                method_label="SOCIAL-IMPC-DR"):
     """Display IMPC DR metrics in clean minimal format."""
-    print(f"\n{method_label} RESULTS")
+    print("\nRESULTS")
     
     # Calculate successful agents count
     successful_count = sum(1 for robot_id in ttg_metrics if ttg_metrics[robot_id].get('reached_goal', False))
@@ -1994,13 +2331,14 @@ def main():
     print("3. Social-CADRL")
     print("4. CBF-RM")
     print("5. DS-MPEPC")
+    print("6. MPEPC")
 
     while True:
         try:
-            choice = int(input("\nEnter method number (1-5): "))
-            if choice in [1, 2, 3, 4, 5]:
+            choice = int(input("\nEnter method number (1-6): "))
+            if choice in [1, 2, 3, 4, 5, 6]:
                 break
-            print("Invalid choice! Please enter 1, 2, 3, 4, or 5.")
+            print("Invalid choice! Please enter 1, 2, 3, 4, 5, or 6.")
         except ValueError:
             print("Invalid input! Please enter a number.")
     
@@ -2150,7 +2488,8 @@ def main():
             verbose_mode = (verbose_choice == 2)
 
             run_cbf_rm(env_type, verbose=verbose_mode)
-        elif choice == 5: 
+
+        elif choice == 5:
             # DS-MPEPC
             print("\nStarting DS-MPEPC...")
 
@@ -2184,6 +2523,41 @@ def main():
             verbose_mode = (verbose_choice == 2)
 
             run_dsmpepc(env_type, verbose=verbose_mode)
+
+        elif choice == 6:
+            # MPEPC
+            print("\nStarting MPEPC...")
+
+            while True:
+                print("\nAvailable environments:")
+                print("1. doorway")
+                print("2. hallway")
+                print("3. intersection")
+                try:
+                    env_choice = int(input("\nEnter environment type (1-3): "))
+                    if env_choice in [1, 2, 3]:
+                        env_types = {1: 'doorway', 2: 'hallway', 3: 'intersection'}
+                        env_type = env_types[env_choice]
+                        break
+                    print("Invalid choice! Please enter 1, 2, or 3.")
+                except ValueError:
+                    print("Invalid input! Please enter a number.")
+
+            while True:
+                print("\nOutput format options:")
+                print("1. Clean (minimal text output)")
+                print("2. Verbose (detailed output with explanations)")
+                try:
+                    verbose_choice = int(input("\nEnter output format (1-2): "))
+                    if verbose_choice in [1, 2]:
+                        break
+                    print("Invalid choice! Please enter 1 or 2.")
+                except ValueError:
+                    print("Invalid input! Please enter a number.")
+
+            verbose_mode = (verbose_choice == 2)
+
+            run_mpepc(env_type, verbose=verbose_mode)
     finally:
         # Always return to the original directory
         os.chdir(original_dir)

@@ -392,7 +392,8 @@ def save_gif(X, G, N, obstacles, env_type):
 
 def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
     """Save trajectory CSVs in the format expected by evaluate_impc_trajectories."""
-    cbf_rm_dir = Path(__file__).resolve().parent
+    cbf_rm_dir = Path(__file__).resolve().parents[3] / 'logs' / 'CBF-RM' / 'trajectories'
+    cbf_rm_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine goal completion per agent
     ttg_list = []
