@@ -12,25 +12,11 @@ Background (MPEPC) follows:
   "Robot Navigation with Model Predictive Equilibrium Point Control",
   IROS 2012.
 
-What is implemented
--------------------
-- Smooth pose-following control law (Park & Kuipers, ICRA 2011), used to
-  parameterize the space of closed-loop trajectories by z* = (r, theta, delta, vmax).
-- Constant-velocity predictions of the other agents over the planning horizon.
-- DS-MPEPC trajectory cost:
-      J = sum_k [ ps_k * J_progress_k + J_action_k + (1 - ps_k) * J_collision_k ]
-        + J_terminal(x_N)
-  with
-      p_c = exp(-d_o^2 / sigma_d^2) * (1 - a * exp(-(1/TTC)^2 / sigma_{1/TTC}^2))
-      ps_k = prod_{i<=k} (1 - p_c_i)
-      C_TTG = exp(-(1/TTG)^2 / sigma_{1/TTG}^2)
-      C_TTC = exp(-(1/TTC)^2 / sigma_{1/TTC}^2)
-      J_terminal = - p_s_N * C_TTG * C_TTC
-  Note: the paper's Eq. (5) prints the anticipatory exponent without a negative
-  sign, but Lemma 4.2 and the intended limits fix the sign as above.
-- Sampling-based minimization of J over z* at every planning cycle, seeded with
-  the previous optimum, a stopping sample, and a set of goal-directed samples.
-- Decentralized multi-agent loop: each agent plans independently.
+Cooperative non-communicative extension
+---------------------------------------
+
+Added an alpha_shared value to allow robots to assume shared responsibility for collision avvoidence
+
 """
 
 import numpy as np
@@ -65,12 +51,46 @@ SIGMA_INV_TTG = 1e-3           # paper value
 SIGMA_D_STATIC = 0.1           # MPEPC default
 SIGMA_D_DYNAMIC = 0.2          # MPEPC default
 
-# Cost weights
-W_PROGRESS = 1.0
-W_ACTION_V = 0.15
-W_ACTION_W = 0.05
-W_COLLISION = 0.4
-W_TERMINAL = 1
+# # Cost weights
+# W_PROGRESS = 2.0
+# W_ACTION_V = 0.15
+# W_ACTION_W = 0.05
+# W_COLLISION = 0.4
+# W_TERMINAL = 5.0
+
+# Weights for doorway no shared responsibility
+# W_PROGRESS = 4.9537
+# W_ACTION_V = 0.0758
+# W_ACTION_W = 0.9790
+# W_COLLISION = 4.8877
+# W_TERMINAL = 1.5572
+
+# Weights for doorway shared responsibility
+W_PROGRESS = 4.4345
+W_ACTION_V = 0.5323
+W_ACTION_W = 0.8203
+W_COLLISION = 1.8325
+W_TERMINAL = 1.0614
+# ttgs: 11.6, 15.0, 14.3
+
+# Weights for hallway
+# W_PROGRESS = 4.2314
+# W_ACTION_V = 0.4040
+# W_ACTION_W = 0.2516
+# W_COLLISION = 2.6545
+# W_TERMINAL = 2.3558
+# ttgs: 13.7, 14.1, 16.0 
+
+# weights for intersection
+# W_PROGRESS = 3.8147
+# W_ACTION_V = 0.9022
+# W_ACTION_W = 0.2844
+# W_COLLISION = 0.5899
+# W_TERMINAL = 1.3089
+# ttgs: 13.6, 14.2, 14.1
+
+# Cooperative non-communicative extension (see module docstring)
+ALPHA_SHARED = 0.5     # responsibility share each agent carries per neighbor
 
 # Planning / simulation
 T_HORIZON = 5.0
@@ -79,7 +99,7 @@ N_HORIZON = int(round(T_HORIZON / DT_PLAN))   # 25
 DT_SIM = 0.1
 
 # Sampling
-N_RANDOM_SAMPLES = 180
+N_RANDOM_SAMPLES = 200
 
 
 # ======================================================================
@@ -230,8 +250,15 @@ def _pc_eq5_vec(d_eff, ttc, sigma_d):
 # ======================================================================
 def trajectory_cost(poses, vels, goal_xy, agent_radius,
                     static_obs_pos, dyn_obs_pred, dyn_obs_vel,
-                    vmax, dt=DT_PLAN):
-    """Compute J_tilde(q_{z*}) for a simulated trajectory."""
+                    vmax, dt=DT_PLAN, cooperative=True):
+    """Compute J_tilde(q_{z*}) for a simulated trajectory.
+
+    cooperative=True assumes every entry of dyn_obs_pred is another instance
+    of this same planner, so each agent carries only ALPHA_SHARED of the
+    pairwise collision-avoidance burden. Set cooperative=False to recover
+    the original non-reciprocal behavior (dynamic neighbors treated as
+    adversarial constant-velocity obstacles).
+    """
     N = len(vels)
     r_sum_dyn = 2.0 * agent_radius
     # Static obstacles in this codebase are visualized as disks of agent_radius,
@@ -244,8 +271,12 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius,
     psi = poses[:, 2]
     v_r = np.stack([v_lin * np.cos(psi), v_lin * np.sin(psi)], axis=1)  # (N+1, 2)
 
-    # --- per-step collision probability (max over obstacles at each step) ---
-    worst_pc = np.zeros(N + 1)
+    # --- per-step collision probability ---
+    # Static and dynamic contributions are computed separately and combined
+    # as independent events so we can scale the dynamic part by the
+    # shared-responsibility factor without diluting the static term.
+    pc_stat = np.zeros(N + 1)
+    pc_dyn = np.zeros(N + 1)
 
     if static_obs_pos is not None and len(static_obs_pos) > 0:
         static_arr = np.asarray(static_obs_pos, dtype=float)    # (S, 2)
@@ -254,7 +285,7 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius,
         d_eff_s = np.linalg.norm(dp_s, axis=-1) - r_sum_stat    # (N+1, S)
         ttc_s = _ttc_disks_vec(dp_s, dv_s, r_sum_stat)
         pc_s = _pc_eq5_vec(d_eff_s, ttc_s, SIGMA_D_STATIC)
-        worst_pc = np.maximum(worst_pc, pc_s.max(axis=1))
+        pc_stat = pc_s.max(axis=1)
 
     D = dyn_obs_pred.shape[1] if dyn_obs_pred.ndim == 3 else 0
     if D > 0:
@@ -263,9 +294,13 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius,
         d_eff_d = np.linalg.norm(dp_d, axis=-1) - r_sum_dyn
         ttc_d = _ttc_disks_vec(dp_d, dv_d, r_sum_dyn)
         pc_d = _pc_eq5_vec(d_eff_d, ttc_d, SIGMA_D_DYNAMIC)
-        worst_pc = np.maximum(worst_pc, pc_d.max(axis=1))
+        share = ALPHA_SHARED if cooperative else 1.0
+        pc_dyn = share * pc_d.max(axis=1)
 
-    pc_arr = worst_pc
+    # Combine static + dynamic pc as independent events. Equivalent to the
+    # original max() formulation when one source dominates, but additive on
+    # the survivability product 1 - pc, which is what we actually use.
+    pc_arr = 1.0 - (1.0 - pc_stat) * (1.0 - pc_dyn)
 
     # --- survivability (cumulative product) ---
     ps_arr = np.cumprod(1.0 - pc_arr)
@@ -323,7 +358,7 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius,
 # ======================================================================
 def plan_one_step(robot_pose, goal_xy, agent_radius,
                   static_obs_pos, dyn_obs_pred, dyn_obs_vel,
-                  prev_z=None, rng=None):
+                  prev_z=None, rng=None, cooperative=True):
     """Choose z* = (r, theta, delta, vmax) minimizing J_tilde."""
     if rng is None:
         rng = np.random.default_rng()
@@ -371,7 +406,8 @@ def plan_one_step(robot_pose, goal_xy, agent_radius,
             target = ego_to_target(robot_pose, r, theta, delta)
         poses, vels = simulate_trajectory(robot_pose, target, vmax)
         cost = trajectory_cost(poses, vels, goal_xy, agent_radius,
-                               static_obs_pos, dyn_obs_pred, dyn_obs_vel, vmax)
+                               static_obs_pos, dyn_obs_pred, dyn_obs_vel, vmax,
+                               cooperative=cooperative)
         if cost < best_cost:
             best_cost = cost
             best = z

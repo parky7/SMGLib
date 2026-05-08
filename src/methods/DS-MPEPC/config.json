@@ -1,0 +1,35 @@
+{
+  "control_law": {
+    "K1": 1.5,
+    "K2": 3.0,
+    "BETA": 0.4,
+    "LAMBDA": 2.0,
+    "R_THRESH": 1.2,
+    "VMAX": 1.0
+  },
+  "cost_weights": {
+    "W_PROGRESS": 4.4345,
+    "W_ACTION_V": 0.5323,
+    "W_ACTION_W": 0.8203,
+    "W_COLLISION": 1.8325,
+    "W_TERMINAL": 1.0614
+  },
+  "ds_mpepc_cost": {
+    "A_ANTICIP": 0.7,
+    "SIGMA_INV_TTC": 0.5,
+    "SIGMA_INV_TTG": 1e-3,
+    "SIGMA_D_STATIC": 0.1,
+    "SIGMA_D_DYNAMIC": 0.2
+  },
+  "cooperative_extension": {
+    "ALPHA_SHARED": 0.5
+  },
+  "planning": {
+    "T_HORIZON": 5.0,
+    "DT_PLAN": 0.2,
+    "DT_SIM": 0.1
+  },
+  "sampling": {
+    "N_RANDOM_SAMPLES": 200
+  }
+}

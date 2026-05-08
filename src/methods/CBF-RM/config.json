@@ -1,0 +1,32 @@
+{
+  "simulation": {
+    "dt": 0.1,
+    "T": 30.0
+  },
+  "safety": {
+    "agent_radius": 0.3,
+    "d_safe_margin": 0.08,
+    "obs_sense_range": 3.0
+  },
+  "qp_gains": {
+    "gamma_gain": 1.2,
+    "alpha_gain": 5.7,
+    "beta_gain": 1.5,
+    "p_weight": 12.0,
+    "q_weight": 0.24
+  },
+  "risk_indicator": {
+    "phi_risk": 1,
+    "c_risk": 0.3,
+    "t_risk": 0.8
+  },
+  "deadlock_cbf": {
+    "eps_D": 0.01,
+    "k_psi": 2.5,
+    "omega_c": 0.4
+  },
+  "control_saturation": {
+    "clip_u": 1.0,
+    "clip_omega": 2.0
+  }
+}
