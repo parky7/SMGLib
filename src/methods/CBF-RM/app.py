@@ -728,6 +728,7 @@ def main():
         dist = np.linalg.norm(X[i, :, -1] - G[i])
         status = "reached goal" if dist < 0.3 else f"dist to goal: {dist:.3f}"
         print(f"  Agent {i+1}: ({X[i, 0, -1]:.3f}, {X[i, 1, -1]:.3f}) - {status}")
+    return 0
 
 
 if __name__ == "__main__":
