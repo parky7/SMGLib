@@ -22,14 +22,14 @@ R_THRESH = 1.2      # user config w/ 1.2 as default
 VMAX = 1.0          # user config w/ 1.0 as default
 
 # Uncertainity parameters
-SIGMA_D_STATIC = 0.1         
-SIGMA_D_DYNAMIC = 0.2          
+SIGMA_D_STATIC = 0.1
+SIGMA_D_DYNAMIC = 0.2
 
 # Cost weights
-W_PROGRESS = 1.0
-W_ACTION_V = 0.15
+W_PROGRESS = 1.5
+W_ACTION_V = 0.1
 W_ACTION_W = 0.05
-W_COLLISION = 0.4
+W_COLLISION = 0.6
 
 # MPEPC paper cost weigths -->leads to deadlock
 # W_PROGRESS = 0.2
@@ -182,7 +182,7 @@ def trajectory_cost(poses, vels, goal_xy, agent_radius, static_obs_pos, dyn_obs_
         J_collision += (1.0 - ps_arr[k]) * W_COLLISION * phi_col
 
     return J_progress + J_action + J_collision
-    
+
 
 
 
