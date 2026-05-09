@@ -66,11 +66,11 @@ SIGMA_D_DYNAMIC = 0.2          # MPEPC default
 # W_TERMINAL = 1.5572
 
 # Weights for doorway shared responsibility
-W_PROGRESS = 4.4345
-W_ACTION_V = 0.5323
-W_ACTION_W = 0.8203
-W_COLLISION = 1.8325
-W_TERMINAL = 1.0614
+W_PROGRESS = 5.0
+W_ACTION_V = 0.1
+W_ACTION_W = 0.2
+W_COLLISION = 1.0
+W_TERMINAL = 1.0
 # ttgs: 11.6, 15.0, 14.3
 
 # Weights for hallway
@@ -79,7 +79,7 @@ W_TERMINAL = 1.0614
 # W_ACTION_W = 0.2516
 # W_COLLISION = 2.6545
 # W_TERMINAL = 2.3558
-# ttgs: 13.7, 14.1, 16.0 
+# ttgs: 13.7, 14.1, 16.0
 
 # weights for intersection
 # W_PROGRESS = 3.8147
@@ -713,10 +713,10 @@ def setup_intersection_scenario():
 def main():
     env_type = None
     verbose_mode = True  # Default to verbose for backwards compatibility
-    
+
     if len(sys.argv) > 1:
         env_type = sys.argv[1]
-    
+
     if len(sys.argv) > 2:
         verbose_arg = sys.argv[2]
         verbose_mode = (verbose_arg == '--verbose')
@@ -728,17 +728,17 @@ def main():
         obstacle_agents_x = setup_hallway_scenario()
     elif env_type == 'intersection':
         obstacle_agents_x = setup_intersection_scenario()
-    
+
     # --- Get User Input for Simulation ---
 
     # Get parameters for the moving drones
     num_moving_drones = get_input("Enter number of moving drones", 2, int)
-    
+
     # Get simulation parameters from user - optimized per environment
     min_radius = get_input("Enter minimum distance between drones", StandardizedEnvironment.DEFAULT_COLLISION_DISTANCE, float)
-    
+
     print("\nConfigure moving drones:")
-    
+
     # Print environment-specific instructions using standardized coordinates
     if env_type == 'doorway':
         print("\nDoorway Configuration:")
@@ -755,14 +755,14 @@ def main():
         print("- The intersection has corridors with center at (0, 0)")
         print("- Corridor width extends from -2 to 2 in both directions")
         print("- X and Y coordinates should be between -5 and 5")
-    
+
     # Get drone positions in ORCA-style individual configuration
     ini_x_moving = []
     target_moving = []
-    
+
     # Get standardized default positions
     standard_positions = StandardizedEnvironment.get_standard_agent_positions(env_type, num_moving_drones)
-    
+
     # Convert to the format expected by the rest of the code
     default_positions = []
     for pos in standard_positions:
@@ -772,28 +772,28 @@ def main():
             'goal_x': pos['goal'][0],
             'goal_y': pos['goal'][1]
         })
-    
+
     for i in range(num_moving_drones):
         print(f"\n--- Agent {i+1} Parameters ---")
-        
+
         # Get default values for this drone (cycle through available defaults)
         default_idx = i % len(default_positions)
         defaults = default_positions[default_idx]
-        
+
         # Get start position
         start_x = get_input(f"Start X position (default: {defaults['start_x']})", defaults['start_x'], float)
         start_y = get_input(f"Start Y position (default: {defaults['start_y']})", defaults['start_y'], float)
-        
-        # Get goal position  
+
+        # Get goal position
         goal_x = get_input(f"Goal X position (default: {defaults['goal_x']})", defaults['goal_x'], float)
         goal_y = get_input(f"Goal Y position (default: {defaults['goal_y']})", defaults['goal_y'], float)
-        
+
         # Store positions
         ini_x_moving.append(np.array([start_x, start_y]))
         target_moving.append(np.array([goal_x, goal_y]))
-        
+
         print(f"Agent {i+1} configured: Start=({start_x}, {start_y}), Goal=({goal_x}, {goal_y})")
-    
+
     X, G, Uhist, K, agent_radius = run_dsmpepc(
         N=num_moving_drones, radius=3.0, T_sim=25.0,
         targets=target_moving, initials=ini_x_moving,
