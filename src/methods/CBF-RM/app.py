@@ -740,11 +740,11 @@ def main():
     obs_sense_range = 3.0
 
     # QP gains
-    gamma_gain = 1.2
-    alpha_gain = 5.7
-    beta_gain = 1.5
-    p_weight = 12.0
-    q_weight = 0.24
+    gamma_gain = 1.4
+    alpha_gain = 4.5
+    beta_gain = 2.0
+    p_weight = 16.0
+    q_weight = 0.18
 
     phi_risk = 1
     c_risk = 0.3
