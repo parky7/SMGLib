@@ -739,12 +739,13 @@ def main():
 
     obs_sense_range = 3.0
 
-    # QP gains
+    # QP gains (success-filtered best from grid-search fine-tuning across
+    # doorway/hallway/intersection — see logs/CBF-RM/fine_tune/aggregated_makespan.csv)
     gamma_gain = 1.4
-    alpha_gain = 4.5
+    alpha_gain = 7.0
     beta_gain = 2.0
     p_weight = 16.0
-    q_weight = 0.18
+    q_weight = 0.24
 
     phi_risk = 1
     c_risk = 0.3

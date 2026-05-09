@@ -471,11 +471,14 @@ class StandardizedEnvironment:
                 {'start': [4.0, corridor_center + 0.3], 'goal': [-4.0, corridor_center - 0.3]}   # Upper path
             ]
         elif env_type == 'intersection':
-            # Agents moving through intersection - offset to avoid collision at center
+            # Agents moving through intersection - offset to avoid collision at center.
+            # Up to 4 agents, one per cardinal direction.
             corridor_center = 0.0
             positions = [
-                {'start': [-4.0, corridor_center - 0.5], 'goal': [4.0, corridor_center + 0.5]},  # Offset horizontal
-                {'start': [corridor_center - 0.5, -4.0], 'goal': [corridor_center + 0.5, 4.0]}   # Offset vertical
+                {'start': [-4.0, corridor_center - 0.5], 'goal': [4.0, corridor_center + 0.5]},  # W -> E
+                {'start': [corridor_center - 0.5, -4.0], 'goal': [corridor_center + 0.5, 4.0]},  # S -> N
+                {'start': [4.0, corridor_center + 0.5], 'goal': [-4.0, corridor_center - 0.5]},  # E -> W
+                {'start': [corridor_center + 0.5, 4.0], 'goal': [corridor_center - 0.5, -4.0]},  # N -> S
             ]
         else:
             # Generic positions
