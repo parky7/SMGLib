@@ -428,6 +428,141 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
 
 
 
+def run_mpepc_simulation(
+    scenario,
+    N,
+    X0,
+    G,
+    vmax=None,
+    r_thresh=None,
+    weights=None,
+    T_sim=30.0,
+    dt=DT_SIM,
+    goal_threshold=0.3,
+    verbose_mode=True,
+):
+    """Run one MPEPC rollout and return histories plus time-to-goal metrics.
+
+    Tunable parameters (vmax, r_thresh, weights) are written to module globals
+    while the rollout runs because the planner reads them from there.
+    """
+    global VMAX, R_THRESH, W_PROGRESS, W_ACTION_V, W_ACTION_W, W_COLLISION
+
+    if vmax is not None:
+        VMAX = float(vmax)
+    if r_thresh is not None:
+        R_THRESH = float(r_thresh)
+    if weights:
+        W_PROGRESS = float(weights.get('W_PROGRESS', W_PROGRESS))
+        W_ACTION_V = float(weights.get('W_ACTION_V', W_ACTION_V))
+        W_ACTION_W = float(weights.get('W_ACTION_W', W_ACTION_W))
+        W_COLLISION = float(weights.get('W_COLLISION', W_COLLISION))
+
+    obstacles = []
+    if scenario == 'doorway':
+        obstacles = StandardizedEnvironment.get_doorway_obstacles()
+    elif scenario == 'hallway':
+        obstacles = StandardizedEnvironment.get_hallway_obstacles()
+    elif scenario == 'intersection':
+        obstacles = StandardizedEnvironment.get_intersection_obstacles()
+    else:
+        print(f"Warning: unknown scenario '{scenario}', using no static obstacles.")
+
+    K = int(round(T_sim / dt))
+    agent_radius = StandardizedEnvironment.DEFAULT_AGENT_RADIUS
+    plan_every = max(1, int(round(DT_PLAN / dt)))
+
+    static_obs_pos = [np.array(o[:2], float) for o in obstacles]
+
+    X = np.zeros((N, 2, K + 1))
+    Theta = np.zeros((N, K + 1))
+    Uhist = np.zeros((N, 2, K))
+
+    X[:, :, 0] = X0
+    Theta[:, 0] = np.arctan2(G[:, 1] - X0[:, 1], G[:, 0] - X0[:, 0])
+
+    prev_z = [None] * N
+    current_target = [None] * N
+    current_vmax = [VMAX] * N
+    infeasible_count = np.zeros(N, dtype=int)
+
+    print("\nStarting MPEPC simulation...")
+
+    for k in range(K):
+        poses = np.column_stack([X[:, 0, k], X[:, 1, k], Theta[:, k]])
+
+        if k == 0:
+            vels_xy = np.zeros((N, 2))
+        else:
+            v_last = np.sqrt(Uhist[:, 0, k - 1] ** 2 + Uhist[:, 1, k - 1] ** 2)
+            psi = Theta[:, k]
+            vels_xy = np.column_stack([v_last * np.cos(psi), v_last * np.sin(psi)])
+
+        if k % plan_every == 0:
+            for i in range(N):
+                others_idx = [j for j in range(N) if j != i]
+                M = len(others_idx)
+                dyn_pred = np.zeros((N_HORIZON + 1, M, 2))
+                dyn_vel = np.zeros((M, 2))
+                for m, j in enumerate(others_idx):
+                    dyn_vel[m] = vels_xy[j]
+                    for t in range(N_HORIZON + 1):
+                        dyn_pred[t, m] = poses[j, :2] + vels_xy[j] * t * DT_PLAN
+
+                z_opt, _, _, _ = plan_one_step(
+                    poses[i], G[i], agent_radius,
+                    static_obs_pos, dyn_pred,
+                    prev_z=prev_z[i],
+                )
+                prev_z[i] = z_opt
+                r_z, theta_z, delta_z, vm_z = z_opt
+                current_target[i] = ego_to_target(poses[i], r_z, theta_z, delta_z)
+                current_vmax[i] = vm_z
+
+        for i in range(N):
+            v_cmd, w_cmd = control_cmd(poses[i], current_target[i], current_vmax[i])
+            x, y, psi = poses[i]
+            X[i, 0, k + 1] = x + v_cmd * np.cos(psi) * dt
+            X[i, 1, k + 1] = y + v_cmd * np.sin(psi) * dt
+            Theta[i, k + 1] = wrap_pi(psi + w_cmd * dt)
+            Uhist[i, 0, k] = v_cmd * np.cos(psi)
+            Uhist[i, 1, k] = v_cmd * np.sin(psi)
+
+        dists = np.linalg.norm(X[:, :, k + 1] - G, axis=1)
+        if np.all(dists < goal_threshold):
+            K = k + 1
+            X = X[:, :, :K + 1]
+            Theta = Theta[:, :K + 1]
+            Uhist = Uhist[:, :, :K]
+            if verbose_mode:
+                print(f"All agents reached goals at step {K} (t={K*dt:.2f}s)")
+            break
+
+    if verbose_mode:
+        print(f"Infeasible fallback counts per agent: {infeasible_count.tolist()}")
+
+    ttg_steps = np.full(N, K, dtype=int)
+    reached_goal = np.zeros(N, dtype=bool)
+    for i in range(N):
+        for step in range(K + 1):
+            if np.linalg.norm(X[i, :, step] - G[i]) <= goal_threshold:
+                ttg_steps[i] = step
+                reached_goal[i] = True
+                break
+    ttg_seconds = ttg_steps.astype(float) * dt
+
+    return (
+        X,
+        Theta,
+        Uhist,
+        K,
+        ttg_steps,
+        ttg_seconds,
+        reached_goal,
+        obstacles,
+    )
+
+
 def main():
     env_type = None
     verbose_mode = True
