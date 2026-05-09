@@ -456,6 +456,216 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
     print(f"Trajectory CSVs saved to {cbf_rm_dir}")
 
 
+def run_cbf_rm_simulation(
+    scenario,
+    N,
+    X0,
+    G,
+    dt,
+    K,
+    d_safe,
+    obs_sense_range,
+    gamma_gain,
+    alpha_gain,
+    beta_gain,
+    p_weight,
+    q_weight,
+    phi_risk,
+    c_risk,
+    t_risk,
+    eps_D,
+    k_psi,
+    omega_c,
+    clip_u,
+    clip_omega,
+    goal_threshold=0.3,
+    verbose_mode=True,
+):
+    """Run one CBF-RM rollout and return histories plus time-to-goal metrics."""
+    obstacles = []
+    if scenario == 'doorway':
+        obstacles = StandardizedEnvironment.get_doorway_obstacles()
+    elif scenario == 'hallway':
+        obstacles = StandardizedEnvironment.get_hallway_obstacles()
+    elif scenario == 'intersection':
+        obstacles = StandardizedEnvironment.get_intersection_obstacles()
+    else:
+        print(f"Warning: unknown scenario '{scenario}', using no static obstacles.")
+
+    X = np.zeros((N, 2, K + 1))
+    Theta = np.zeros((N, K + 1))
+    Uhist = np.zeros((N, 2, K))
+    Ohist = np.zeros((N, K))
+    Rhist = np.zeros((N, K))
+    Zhist = np.zeros((N, K))
+    Dmin_hist = np.zeros((N, K))
+    infeasible_count = np.zeros(N, dtype=int)
+
+    X[:, :, 0] = X0
+    Theta[:, 0] = np.arctan2(G[:, 1] - X0[:, 1], G[:, 0] - X0[:, 0])
+
+    print("\nStarting CBF-RM simulation...")
+
+    for k in range(K):
+        Xk = X[:, :, k]
+        Tk = Theta[:, k]
+
+        if k == 0:
+            Uprev = np.zeros((N, 2))
+        else:
+            Uprev = Uhist[:, :, k - 1]
+
+        Ri, zeta = compute_risk_indicator(
+            Xk, Uprev, d_safe, alpha_gain, phi_risk, c_risk, t_risk
+        )
+        Rhist[:, k] = Ri
+        Zhist[:, k] = zeta
+
+        Uk = np.zeros((N, 2))
+        Ok = np.zeros(N)
+
+        for i in range(N):
+            xi = Xk[i]
+            gi = G[i]
+            theta_i = Tk[i]
+            z = float(zeta[i])
+
+            H = np.diag([2.0, 2.0, 2.0 * q_weight, 2.0 * p_weight])
+            c_vec = np.zeros(4)
+            A_rows = []
+            b_rows = []
+
+            V_i = V_base(xi, gi)
+            gradV = grad_V_base(xi, gi)
+            Vq_i, gradVq_x, gradVq_theta, _, _ = Vq_and_grads(xi, gi, theta_i)
+
+            A_clf = np.array([
+                (1.0 - z) * gradV[0] + z * gradVq_x[0],
+                (1.0 - z) * gradV[1] + z * gradVq_x[1],
+                z * gradVq_theta,
+                -1.0,
+            ])
+            b_clf = -gamma_gain * ((1.0 - z) * V_i + z * Vq_i)
+            A_rows.append(A_clf)
+            b_rows.append(b_clf)
+
+            for j in range(N):
+                if j == i:
+                    continue
+                xj = Xk[j]
+                h_ij, grad_h = hij_and_grad(xi, xj, d_safe)
+                Wi = 0.5
+                A_cbf = np.array([-grad_h[0], -grad_h[1], 0.0, 0.0])
+                b_cbf = Wi * alpha_gain * h_ij
+                A_rows.append(A_cbf)
+                b_rows.append(b_cbf)
+
+            for obs_pos in obstacles:
+                obs = np.asarray(obs_pos, dtype=float)
+                dist_to_obs = np.linalg.norm(xi - obs)
+                if dist_to_obs < obs_sense_range:
+                    h_obs, grad_h_obs = hij_and_grad(xi, obs, d_safe)
+                    Wi = 0.5
+                    A_obs = np.array([-grad_h_obs[0], -grad_h_obs[1], 0.0, 0.0])
+                    b_obs = Wi * alpha_gain * h_obs
+                    A_rows.append(A_obs)
+                    b_rows.append(b_obs)
+
+            D_values = []
+            for j in range(N):
+                if j == i:
+                    continue
+                xj = Xk[j]
+                hD_ij, grad_hD_x, grad_hD_theta, Dij = hD_and_grads(
+                    xi, xj, gi, theta_i, d_safe, eps_D, k_psi
+                )
+                D_values.append(Dij)
+
+                A_hd = np.array([
+                    -z * grad_hD_x[0],
+                    -z * grad_hD_x[1],
+                    -z * grad_hD_theta,
+                    0.0,
+                ])
+                b_hd = z * beta_gain * hD_ij
+                A_rows.append(A_hd)
+                b_rows.append(b_hd)
+
+            Dmin_hist[i, k] = np.min(D_values) if D_values else np.nan
+
+            A_mat = np.vstack(A_rows) if A_rows else np.zeros((0, 4))
+            b_vec = np.array(b_rows) if b_rows else np.zeros(0)
+
+            y, ok = solve_qp(H, c_vec, A_mat, b_vec)
+
+            if ok and y is not None:
+                u_star = y[:2]
+                omega_star = y[2]
+            else:
+                infeasible_count[i] += 1
+                u_star = np.zeros(2)
+                omega_star = omega_c
+
+            nu = np.linalg.norm(u_star)
+            if nu > clip_u:
+                u_star = clip_u * u_star / nu
+            omega_star = float(np.clip(omega_star, -clip_omega, clip_omega))
+
+            Uk[i] = u_star
+            Ok[i] = omega_star
+
+        X[:, :, k + 1] = Xk + dt * Uk
+        Theta[:, k + 1] = np.array([wrap_to_pi(Tk[i] + dt * Ok[i]) for i in range(N)])
+        Uhist[:, :, k] = Uk
+        Ohist[:, k] = Ok
+
+        all_done = True
+        for i in range(N):
+            if np.linalg.norm(X[i, :, k + 1] - G[i]) > goal_threshold:
+                all_done = False
+                break
+        if all_done:
+            K = k + 1
+            X = X[:, :, :K + 1]
+            Theta = Theta[:, :K + 1]
+            Uhist = Uhist[:, :, :K]
+            Ohist = Ohist[:, :K]
+            Rhist = Rhist[:, :K]
+            Zhist = Zhist[:, :K]
+            Dmin_hist = Dmin_hist[:, :K]
+            print(f"All agents reached goals at step {K} (t={K*dt:.2f}s)")
+            break
+
+    if verbose_mode:
+        print(f"Infeasible fallback counts per agent: {infeasible_count.tolist()}")
+
+    ttg_steps = np.full(N, K, dtype=int)
+    reached_goal = np.zeros(N, dtype=bool)
+    for i in range(N):
+        for step in range(K + 1):
+            if np.linalg.norm(X[i, :, step] - G[i]) <= goal_threshold:
+                ttg_steps[i] = step
+                reached_goal[i] = True
+                break
+    ttg_seconds = ttg_steps.astype(float) * dt
+
+    return (
+        X,
+        Theta,
+        Uhist,
+        Ohist,
+        Rhist,
+        Zhist,
+        Dmin_hist,
+        infeasible_count,
+        K,
+        ttg_steps,
+        ttg_seconds,
+        reached_goal,
+        obstacles,
+    )
+
+
 def main():
     env_type = None
     verbose_mode = True
@@ -464,15 +674,6 @@ def main():
         env_type = sys.argv[1]
     if len(sys.argv) > 2:
         verbose_mode = (sys.argv[2] == '--verbose')
-
-    # Get obstacles from standardized environment
-    obstacles = []
-    if env_type == 'doorway':
-        obstacles = StandardizedEnvironment.get_doorway_obstacles()
-    elif env_type == 'hallway':
-        obstacles = StandardizedEnvironment.get_hallway_obstacles()
-    elif env_type == 'intersection':
-        obstacles = StandardizedEnvironment.get_intersection_obstacles()
 
     # --- User input for moving agents (matching IMPC-DR / ORCA format) ---
     num_moving = get_input("Enter number of moving agents", 2, int)
@@ -536,15 +737,14 @@ def main():
     agent_radius = StandardizedEnvironment.DEFAULT_AGENT_RADIUS
     d_safe = 2.0 * agent_radius + 0.08
 
-    # Obstacle sensing range (only add CBF constraints for nearby obstacles)
     obs_sense_range = 3.0
 
     # QP gains
-    gamma_gain = 1.2
-    alpha_gain = 5.7
-    beta_gain = 1.5
-    p_weight = 12.0
-    q_weight = 0.24
+    gamma_gain = 1.4
+    alpha_gain = 4.5
+    beta_gain = 2.0
+    p_weight = 16.0
+    q_weight = 0.18
 
     phi_risk = 1
     c_risk = 0.3
@@ -554,167 +754,48 @@ def main():
     k_psi = 2.5
     omega_c = 0.4
 
-    clip_u = 1.0  # increased for standardized grid scale
+    clip_u = 1.0
     clip_omega = 2.0
 
-    # ========================================================
-    # Histories
-    # ========================================================
-    X = np.zeros((N, 2, K + 1))
-    Theta = np.zeros((N, K + 1))
-    Uhist = np.zeros((N, 2, K))
-    Ohist = np.zeros((N, K))
-    Rhist = np.zeros((N, K))
-    Zhist = np.zeros((N, K))
-    Dmin_hist = np.zeros((N, K))
-    infeasible_count = np.zeros(N, dtype=int)
-
-    X[:, :, 0] = X0
-    Theta[:, 0] = np.arctan2(G[:, 1] - X0[:, 1], G[:, 0] - X0[:, 0])
-
-    print("\nStarting CBF-RM simulation...")
-
-    for k in range(K):
-        Xk = X[:, :, k]
-        Tk = Theta[:, k]
-
-        if k == 0:
-            Uprev = np.zeros((N, 2))
-        else:
-            Uprev = Uhist[:, :, k - 1]
-
-        Ri, zeta = compute_risk_indicator(
-            Xk, Uprev, d_safe, alpha_gain, phi_risk, c_risk, t_risk
-        )
-        Rhist[:, k] = Ri
-        Zhist[:, k] = zeta
-
-        Uk = np.zeros((N, 2))
-        Ok = np.zeros(N)
-
-        for i in range(N):
-            xi = Xk[i]
-            gi = G[i]
-            theta_i = Tk[i]
-            z = float(zeta[i])
-
-            # Decision y = [u_x, u_y, omega, delta]
-            H = np.diag([2.0, 2.0, 2.0 * q_weight, 2.0 * p_weight])
-            c_vec = np.zeros(4)
-            A_rows = []
-            b_rows = []
-
-            # ---------- Eq. (19a): CLF + rotated CLF ----------
-            V_i = V_base(xi, gi)
-            gradV = grad_V_base(xi, gi)
-            Vq_i, gradVq_x, gradVq_theta, _, _ = Vq_and_grads(xi, gi, theta_i)
-
-            A_clf = np.array([
-                (1.0 - z) * gradV[0] + z * gradVq_x[0],
-                (1.0 - z) * gradV[1] + z * gradVq_x[1],
-                z * gradVq_theta,
-                -1.0,
-            ])
-            b_clf = -gamma_gain * ((1.0 - z) * V_i + z * Vq_i)
-            A_rows.append(A_clf)
-            b_rows.append(b_clf)
-
-            # ---------- Eq. (19b): pairwise collision CBF (other agents) ----------
-            for j in range(N):
-                if j == i:
-                    continue
-                xj = Xk[j]
-                h_ij, grad_h = hij_and_grad(xi, xj, d_safe)
-                Wi = 0.5
-                A_cbf = np.array([-grad_h[0], -grad_h[1], 0.0, 0.0])
-                b_cbf = Wi * alpha_gain * h_ij
-                A_rows.append(A_cbf)
-                b_rows.append(b_cbf)
-
-            # ---------- Collision CBF for nearby obstacles ----------
-            for obs_pos in obstacles:
-                obs = np.asarray(obs_pos, dtype=float)
-                dist_to_obs = np.linalg.norm(xi - obs)
-                if dist_to_obs < obs_sense_range:
-                    h_obs, grad_h_obs = hij_and_grad(xi, obs, d_safe)
-                    Wi = 0.5
-                    A_obs = np.array([-grad_h_obs[0], -grad_h_obs[1], 0.0, 0.0])
-                    b_obs = Wi * alpha_gain * h_obs
-                    A_rows.append(A_obs)
-                    b_rows.append(b_obs)
-
-            # ---------- Eq. (19c): auxiliary deadlock CBF (other agents only) ----------
-            D_values = []
-            for j in range(N):
-                if j == i:
-                    continue
-                xj = Xk[j]
-                hD_ij, grad_hD_x, grad_hD_theta, Dij = hD_and_grads(
-                    xi, xj, gi, theta_i, d_safe, eps_D, k_psi
-                )
-                D_values.append(Dij)
-
-                A_hd = np.array([
-                    -z * grad_hD_x[0],
-                    -z * grad_hD_x[1],
-                    -z * grad_hD_theta,
-                    0.0,
-                ])
-                b_hd = z * beta_gain * hD_ij
-                A_rows.append(A_hd)
-                b_rows.append(b_hd)
-
-            Dmin_hist[i, k] = np.min(D_values) if D_values else np.nan
-
-            A_mat = np.vstack(A_rows) if A_rows else np.zeros((0, 4))
-            b_vec = np.array(b_rows) if b_rows else np.zeros(0)
-
-            y, ok = solve_qp(H, c_vec, A_mat, b_vec)
-
-            if ok and y is not None:
-                u_star = y[:2]
-                omega_star = y[2]
-            else:
-                # Remark 4 practical fallback
-                infeasible_count[i] += 1
-                u_star = np.zeros(2)
-                omega_star = omega_c
-
-            # Numerical clipping only after optimization
-            nu = np.linalg.norm(u_star)
-            if nu > clip_u:
-                u_star = clip_u * u_star / nu
-            omega_star = float(np.clip(omega_star, -clip_omega, clip_omega))
-
-            Uk[i] = u_star
-            Ok[i] = omega_star
-
-        X[:, :, k + 1] = Xk + dt * Uk
-        Theta[:, k + 1] = np.array([wrap_to_pi(Tk[i] + dt * Ok[i]) for i in range(N)])
-        Uhist[:, :, k] = Uk
-        Ohist[:, k] = Ok
-
-        # Early termination: check if all agents reached goals
-        all_done = True
-        for i in range(N):
-            if np.linalg.norm(X[i, :, k + 1] - G[i]) > 0.3:
-                all_done = False
-                break
-        if all_done:
-            # Truncate histories to actual length
-            K = k + 1
-            X = X[:, :, :K + 1]
-            Theta = Theta[:, :K + 1]
-            Uhist = Uhist[:, :, :K]
-            Ohist = Ohist[:, :K]
-            Rhist = Rhist[:, :K]
-            Zhist = Zhist[:, :K]
-            Dmin_hist = Dmin_hist[:, :K]
-            print(f"All agents reached goals at step {K} (t={K*dt:.2f}s)")
-            break
-
-    if verbose_mode:
-        print(f"Infeasible fallback counts per agent: {infeasible_count.tolist()}")
+    (
+        X,
+        Theta,
+        Uhist,
+        Ohist,
+        Rhist,
+        Zhist,
+        Dmin_hist,
+        infeasible_count,
+        K,
+        ttg_steps,
+        ttg_seconds,
+        reached_goal,
+        obstacles,
+    ) = run_cbf_rm_simulation(
+        scenario=env_type,
+        N=N,
+        X0=X0,
+        G=G,
+        dt=dt,
+        K=K,
+        d_safe=d_safe,
+        obs_sense_range=obs_sense_range,
+        gamma_gain=gamma_gain,
+        alpha_gain=alpha_gain,
+        beta_gain=beta_gain,
+        p_weight=p_weight,
+        q_weight=q_weight,
+        phi_risk=phi_risk,
+        c_risk=c_risk,
+        t_risk=t_risk,
+        eps_D=eps_D,
+        k_psi=k_psi,
+        omega_c=omega_c,
+        clip_u=clip_u,
+        clip_omega=clip_omega,
+        goal_threshold=0.3,
+        verbose_mode=verbose_mode,
+    )
 
     # Save results
     print("\nSaving results...")
