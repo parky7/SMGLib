@@ -9,10 +9,10 @@
     "obs_sense_range": 3.0
   },
   "qp_gains": {
-    "gamma_gain": 1.2,
-    "alpha_gain": 5.7,
-    "beta_gain": 1.5,
-    "p_weight": 12.0,
+    "gamma_gain": 1.4,
+    "alpha_gain": 7.0,
+    "beta_gain": 2.0,
+    "p_weight": 16.0,
     "q_weight": 0.24
   },
   "risk_indicator": {
