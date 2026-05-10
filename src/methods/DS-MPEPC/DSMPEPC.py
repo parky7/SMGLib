@@ -65,13 +65,13 @@ SIGMA_D_DYNAMIC = 0.2          # MPEPC default
 # W_COLLISION = 4.8877
 # W_TERMINAL = 1.5572
 
-# Weights for doorway shared responsibility
-W_PROGRESS = 5.0
+# Best 100%-success average across doorway/hallway/intersection
+W_PROGRESS = 4.0
 W_ACTION_V = 0.1
-W_ACTION_W = 0.2
-W_COLLISION = 1.0
+W_ACTION_W = 0.5
+W_COLLISION = 4.5
 W_TERMINAL = 1.0
-# ttgs: 11.6, 15.0, 14.3
+# avg makespan: 15.0s (doorway 13.8s, hallway 14.1s, intersection 17.1s)
 
 # Weights for hallway
 # W_PROGRESS = 4.2314

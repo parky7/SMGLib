@@ -8,10 +8,10 @@
     "VMAX": 1.0
   },
   "cost_weights": {
-    "W_PROGRESS": 5.0,
+    "W_PROGRESS": 4.0,
     "W_ACTION_V": 0.1,
-    "W_ACTION_W": 0.2,
-    "W_COLLISION": 1.0,
+    "W_ACTION_W": 0.5,
+    "W_COLLISION": 4.5,
     "W_TERMINAL": 1.0
   },
   "ds_mpepc_cost": {
