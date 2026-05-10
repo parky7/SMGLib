@@ -390,8 +390,8 @@ def save_csvs(X, G, Uhist, N, K, goal_threshold=0.3):
     with open(mpepc_dir / "completion_step.txt", "w") as f:
         f.write(str(completion_step))
 
-    # Save ttg_impc_dr.csv (reuses the same filename convention)
-    with open(mpepc_dir / "ttg_impc_dr.csv", "w", newline="") as f:
+    # Save ttg_mpepc.csv — read by run_simulation.py's evaluate_impc_trajectories.
+    with open(mpepc_dir / "ttg_mpepc.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["robot_id", "ttg", "reached_goal"])
         for robot_id, ttg, reached in ttg_list:
